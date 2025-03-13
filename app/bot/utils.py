@@ -169,3 +169,15 @@ def humanize_text(text: str, typo_probability: float = 0.05) -> str:
                     words[i] = words[i] + random.choice(['.', '!', '?'])
 
     return ' '.join(words)
+
+
+def is_persian_content(text: str) -> bool:
+    """تشخیص محتوای فارسی"""
+    if not text:
+        return False
+
+    persian_chars = set('آابپتثجچحخدذرزژسشصضطظعغفقکگلمنوهی')
+    text_chars = set(text.replace(" ", ""))
+
+    # اگر حداقل 20٪ حروف فارسی باشند
+    return len(persian_chars.intersection(text_chars)) / max(len(text_chars), 1) > 0.2

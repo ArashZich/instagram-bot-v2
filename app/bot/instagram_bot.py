@@ -1,74 +1,46 @@
 import time
 import random
-import uuid
-import json
-import os
-from typing import List, Dict, Any, Optional, Tuple
-from datetime import datetime, timedelta
-from instagrapi import Client
-from instagrapi.exceptions import LoginRequired, ClientError, ClientLoginRequired
-import pickle
-from loguru import logger
-from pathlib import Path
-import schedule
 import threading
 import traceback
+import schedule
+from datetime import datetime, timedelta
+from loguru import logger
+from pathlib import Path
 
 from app.config import (
-    INSTAGRAM_USERNAME,
-    INSTAGRAM_PASSWORD,
     DAILY_INTERACTION_LIMIT,
-    COMMENT_PROBABILITY,
-    REACTION_PROBABILITY,
-    DM_PROBABILITY,
+    PERSIAN_HASHTAGS,
     get_random_interval,
     get_random_session_duration,
     get_random_break_duration
 )
 from app.database.connection import get_database
-from app.database.models import (
-    UserInteraction,
-    InteractionType,
-    UserProfile,
-    BotSession,
-    get_collection_name
-)
-from app.bot.utils import (
-    setup_logger,
-    human_sleep,
-    should_perform_action,
-    generate_session_id,
-    get_random_comment,
-    get_random_dm,
-    get_random_reaction,
-    humanize_text
-)
+from app.database.models import UserProfile, get_collection_name
+from app.bot.utils import setup_logger, human_sleep
+from app.bot.session_manager import SessionManager
+from app.bot.actions import InstagramActions
+from app.bot.explorers import InstagramExplorers
 
 
-class InstagramBot:
+class InstagramBot(SessionManager):
     def __init__(self):
-        self.client = Client()
-        self.username = INSTAGRAM_USERNAME
-        self.password = INSTAGRAM_PASSWORD
-        self.db = get_database()
-        self.logger = setup_logger()
-        self.session_id = generate_session_id()
+        super().__init__()
         self.is_running = False
         self.daily_interactions = 0
         self.last_check_follower_time = datetime.now()
         self.session_start_time = datetime.now()
         self.session_end_time = self.session_start_time + \
             timedelta(seconds=get_random_session_duration())
-        # اضافه کردن فیلد logged_in
-        self.logged_in = False
-        self.last_error = None
-        self.last_operation = "راه‌اندازی"
 
-        # Create collections if they don't exist
+        # ایجاد کلاس‌های کمکی
+        self.actions = InstagramActions(self.client, self.db, self.session_id)
+        self.explorers = InstagramExplorers(self.client, self.actions)
+
+        # ایجاد کالکشن‌ها اگر وجود ندارند
         self._initialize_collections()
 
     def _initialize_collections(self):
-        """Initialize database collections if they don't exist"""
+        """ایجاد کالکشن‌های دیتابیس در صورت عدم وجود"""
         collections = self.db.list_collection_names()
         required_collections = [
             get_collection_name("sessions"),
@@ -80,100 +52,16 @@ class InstagramBot:
         for collection in required_collections:
             if collection not in collections:
                 self.db.create_collection(collection)
-                self.logger.info(f"Created collection: {collection}")
-
-    def login(self) -> bool:
-        """لاگین ساده به اینستاگرام"""
-        try:
-            if self.logged_in:
-                return True
-
-            self.logger.info(f"تلاش برای لاگین با کاربر {self.username}")
-            self.last_operation = "لاگین به اینستاگرام"
-
-            # تست اتصال به اینترنت
-            try:
-                import requests
-                self.logger.info("تست اتصال به اینترنت...")
-                response = requests.get("https://www.google.com", timeout=10)
-                self.logger.info(
-                    f"✅ اتصال به اینترنت موفق: {response.status_code}")
-            except Exception as ne:
-                self.logger.error(f"❌ مشکل در اتصال به اینترنت: {str(ne)}")
-
-            # تنظیم پارامترهای کلاینت و لاگین
-            self.client.delay_range = [2, 5]
-            self.client.request_timeout = 60
-
-            self.logger.info("در حال اجرای لاگین...")
-            login_result = self.client.login(self.username, self.password)
-            self.logger.info(f"نتیجه لاگین: {login_result}")
-
-            self.logged_in = True
-            self.logger.info("✅ ورود موفقیت‌آمیز به اینستاگرام")
-            return True
-
-        except Exception as e:
-            self.logged_in = False
-            self.logger.error(f"❌ خطا در لاگین: {str(e)}")
-            self.last_error = str(e)
-            import traceback
-            traceback.print_exc()
-            return False
-
-    def _record_session_start(self):
-        """Record session start in database"""
-        session = BotSession(
-            session_id=self.session_id,
-            started_at=datetime.now(),
-            user_agent="instagrapi-client",
-            session_data={
-                "username": self.username,
-                "device_id": self.client.device_id if hasattr(self.client, "device_id") else None
-            },
-            is_active=True
-        )
-
-        self.db[get_collection_name("sessions")].insert_one(session.to_dict())
-        self.logger.info(f"Recorded session start with ID: {self.session_id}")
-
-    def _record_session_end(self):
-        """Record session end in database"""
-        self.db[get_collection_name("sessions")].update_one(
-            {"session_id": self.session_id},
-            {
-                "$set": {
-                    "ended_at": datetime.now(),
-                    "is_active": False
-                }
-            }
-        )
-        self.logger.info(f"Recorded session end with ID: {self.session_id}")
-
-    def _record_interaction(self, interaction: UserInteraction):
-        """Record user interaction in database"""
-        self.db[get_collection_name("interactions")].insert_one(
-            interaction.to_dict())
-        self.daily_interactions += 1
-
-        # Update user profile
-        self._update_user_profile(
-            user_id=interaction.user_id,
-            username=interaction.username,
-            interaction_type=interaction.interaction_type
-        )
-
-        self.logger.info(
-            f"Recorded {interaction.interaction_type} interaction with user {interaction.username}")
+                self.logger.info(f"ایجاد کالکشن: {collection}")
 
     def _update_user_profile(self, user_id: str, username: str, interaction_type: str):
-        """Update or create user profile in database"""
-        # Get existing user profile
+        """به‌روزرسانی یا ایجاد پروفایل کاربر در دیتابیس"""
+        # دریافت پروفایل کاربر موجود
         user_data = self.db[get_collection_name("users")].find_one({
             "user_id": user_id})
 
         if user_data:
-            # Update existing profile
+            # به‌روزرسانی پروفایل موجود
             self.db[get_collection_name("users")].update_one(
                 {"user_id": user_id},
                 {
@@ -189,7 +77,7 @@ class InstagramBot:
                 }
             )
         else:
-            # Create new user profile
+            # ایجاد پروفایل کاربر جدید
             user_info = None
             try:
                 user_info = self.client.user_info_by_username(username)
@@ -201,8 +89,8 @@ class InstagramBot:
                 user_id=user_id,
                 username=username,
                 full_name=user_info.full_name if user_info else None,
-                is_following=False,  # Will be updated during follower check
-                is_follower=False,   # Will be updated during follower check
+                is_following=False,  # در بررسی دنبال‌کنندگان به‌روزرسانی می‌شود
+                is_follower=False,   # در بررسی دنبال‌کنندگان به‌روزرسانی می‌شود
                 interaction_count=1,
                 last_interaction=datetime.now(),
                 first_seen=datetime.now(),
@@ -216,26 +104,26 @@ class InstagramBot:
                 user_profile.to_dict())
 
     def check_and_update_followers(self):
-        """Check for new followers and update database"""
-        if (datetime.now() - self.last_check_follower_time).total_seconds() < 3600:
-            # Don't check more than once per hour
-            return
+        """بررسی دنبال‌کنندگان جدید و به‌روزرسانی دیتابیس"""
+        if (datetime.now() - self.last_check_follower_time).total_seconds() < 7200:  # 2 ساعت به جای 1 ساعت
+            # بررسی بیش از هر 2 ساعت انجام نمی‌شود
+            return True
 
-        self.logger.info("Checking followers and following")
+        self.logger.info("بررسی دنبال‌کنندگان و دنبال‌شوندگان")
 
         try:
-            # Get current followers and following
+            # دریافت دنبال‌کنندگان و دنبال‌شوندگان فعلی
             followers = set(self.client.user_followers(
                 self.client.user_id).keys())
             following = set(self.client.user_following(
                 self.client.user_id).keys())
 
-            # Update database
+            # به‌روزرسانی دیتابیس
             for user_id in followers.union(following):
                 is_follower = user_id in followers
                 is_following = user_id in following
 
-                # Try to get username
+                # تلاش برای دریافت نام کاربری
                 username = None
                 try:
                     user_info = self.client.user_info(user_id)
@@ -247,12 +135,12 @@ class InstagramBot:
                 if not username:
                     continue
 
-                # Update database
+                # به‌روزرسانی دیتابیس
                 existing_user = self.db[get_collection_name(
                     "users")].find_one({"user_id": user_id})
 
                 if existing_user:
-                    # Update existing user
+                    # به‌روزرسانی کاربر موجود
                     self.db[get_collection_name("users")].update_one(
                         {"user_id": user_id},
                         {"$set": {
@@ -261,19 +149,25 @@ class InstagramBot:
                         }}
                     )
 
-                    # If user is no longer following us but we are following them, unfollow
+                    # اگر کاربر دیگر ما را دنبال نمی‌کند اما ما او را دنبال می‌کنیم، لغو دنبال کردن
                     if not is_follower and is_following and existing_user.get("is_follower", False):
-                        self.logger.info(
-                            f"User {username} unfollowed us, unfollowing them")
-                        self.unfollow_user(user_id, username)
+                        # به جای لغو فوری، با احتمال کمتر
+                        if random.random() < 0.3:  # 30% احتمال
+                            self.logger.info(
+                                f"کاربر {username} ما را آنفالو کرده، آنفالو می‌کنیم")
+                            self.actions.unfollow_user(
+                                user_id, username, self._update_user_profile)
 
-                    # If user has followed us and we're not following them, follow back
+                    # اگر کاربر ما را دنبال کرده و ما او را دنبال نمی‌کنیم، دنبال کردن
                     elif is_follower and not is_following and not existing_user.get("is_follower", False):
-                        self.logger.info(
-                            f"New follower {username}, following back")
-                        self.follow_user(user_id, username)
+                        # با احتمال متوسط
+                        if random.random() < 0.5:  # 50% احتمال
+                            self.logger.info(
+                                f"دنبال‌کننده جدید {username}، فالو بک می‌دهیم")
+                            self.actions.follow_user(
+                                user_id, username, self._update_user_profile)
                 else:
-                    # Create new user profile
+                    # ایجاد پروفایل کاربر جدید
                     user_profile = UserProfile(
                         user_id=user_id,
                         username=username,
@@ -286,352 +180,66 @@ class InstagramBot:
                     self.db[get_collection_name("users")].insert_one(
                         user_profile.to_dict())
 
-                    # If new follower, follow back
+                    # اگر دنبال‌کننده جدید است، با احتمال متوسط دنبال کردن
                     if is_follower and not is_following:
-                        self.logger.info(
-                            f"New follower {username}, following back")
-                        self.follow_user(user_id, username)
+                        if random.random() < 0.5:  # 50% احتمال
+                            self.logger.info(
+                                f"دنبال‌کننده جدید {username}، فالو بک می‌دهیم")
+                            self.actions.follow_user(
+                                user_id, username, self._update_user_profile)
+
+                # استراحت بین هر کاربر برای طبیعی بودن
+                human_sleep(2, 5)
 
             self.last_check_follower_time = datetime.now()
+            return True
 
         except Exception as e:
-            self.logger.error(f"Error checking followers: {e}")
+            if "challenge_required" in str(e).lower():
+                self.logger.error(f"چالش امنیتی در هنگام بررسی دنبال‌کنندگان")
+                return False
+
+            self.logger.error(f"خطا در بررسی دنبال‌کنندگان: {e}")
             traceback.print_exc()
-
-    def follow_user(self, user_id: str, username: str):
-        """Follow a user and record interaction"""
-        try:
-            self.client.user_follow(user_id)
-            human_sleep(2, 5)
-
-            # Record interaction
-            interaction = UserInteraction(
-                user_id=user_id,
-                username=username,
-                interaction_type=InteractionType.FOLLOW,
-                timestamp=datetime.now()
-            )
-            self._record_interaction(interaction)
-
-            self.logger.info(f"Followed user: {username}")
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Failed to follow user {username}: {e}")
             return False
-
-    def unfollow_user(self, user_id: str, username: str):
-        """Unfollow a user and record interaction"""
-        try:
-            self.client.user_unfollow(user_id)
-            human_sleep(2, 5)
-
-            # Record interaction
-            interaction = UserInteraction(
-                user_id=user_id,
-                username=username,
-                interaction_type=InteractionType.UNFOLLOW,
-                timestamp=datetime.now()
-            )
-            self._record_interaction(interaction)
-
-            self.logger.info(f"Unfollowed user: {username}")
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Failed to unfollow user {username}: {e}")
-            return False
-
-    def comment_on_media(self, media_id: str, username: str, user_id: str, topic: str = None):
-        """Comment on a media post and record interaction"""
-        if not should_perform_action(COMMENT_PROBABILITY):
-            return False
-
-        try:
-            # Get comment text and humanize it
-            comment_text = humanize_text(get_random_comment(topic))
-
-            # Add comment
-            self.client.media_comment(media_id, comment_text)
-            human_sleep(3, 8)
-
-            # Record interaction
-            interaction = UserInteraction(
-                user_id=user_id,
-                username=username,
-                interaction_type=InteractionType.COMMENT,
-                timestamp=datetime.now(),
-                content=comment_text,
-                media_id=media_id
-            )
-            self._record_interaction(interaction)
-
-            self.logger.info(
-                f"Commented on media {media_id} from {username}: {comment_text}")
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Failed to comment on media {media_id}: {e}")
-            return False
-
-    def react_to_story(self, story_id: str, username: str, user_id: str):
-        """React to a story and record interaction"""
-        if not should_perform_action(REACTION_PROBABILITY):
-            return False
-
-        try:
-            # Get reaction emoji
-            reaction = get_random_reaction()
-
-            # React to story
-            self.client.story_send_reaction(story_id, reaction)
-            human_sleep(2, 6)
-
-            # Record interaction
-            interaction = UserInteraction(
-                user_id=user_id,
-                username=username,
-                interaction_type=InteractionType.STORY_REACTION,
-                timestamp=datetime.now(),
-                content=reaction,
-                media_id=story_id
-            )
-            self._record_interaction(interaction)
-
-            self.logger.info(
-                f"Reacted to story {story_id} from {username} with {reaction}")
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Failed to react to story {story_id}: {e}")
-            return False
-
-    def send_direct_message(self, user_id: str, username: str, topic: str = None):
-        """Send a direct message and record interaction"""
-        if not should_perform_action(DM_PROBABILITY):
-            return False
-
-        try:
-            # Get message text and humanize it
-            message_text = humanize_text(get_random_dm(topic))
-
-            # Send message
-            self.client.direct_send(message_text, [user_id])
-            human_sleep(5, 10)
-
-            # Record interaction
-            interaction = UserInteraction(
-                user_id=user_id,
-                username=username,
-                interaction_type=InteractionType.DIRECT_MESSAGE,
-                timestamp=datetime.now(),
-                content=message_text
-            )
-            self._record_interaction(interaction)
-
-            self.logger.info(f"Sent DM to {username}: {message_text}")
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Failed to send DM to {username}: {e}")
-            return False
-
-    def explore_hashtags(self, hashtags: List[str], count: int = 5):
-        """Explore posts with specified hashtags and interact with them"""
-        for hashtag in hashtags:
-            self.logger.info(f"🔍 Exploring hashtag: #{hashtag}")
-
-            try:
-                # Get medias by hashtag
-                self.logger.info(f"Fetching recent posts for #{hashtag}")
-                medias = self.client.hashtag_medias_recent(hashtag, count)
-                self.logger.info(f"Found {len(medias)} posts for #{hashtag}")
-
-                for i, media in enumerate(medias):
-                    # Check if we've reached interaction limit
-                    if self.daily_interactions >= DAILY_INTERACTION_LIMIT:
-                        self.logger.info(
-                            "Daily interaction limit reached, stopping")
-                        return
-
-                    try:
-                        user_id = media.user.pk
-                        username = media.user.username
-
-                        self.logger.info(
-                            f"Post {i+1}/{len(medias)}: Interacting with @{username}'s post")
-
-                        # Comment on post
-                        comment_result = self.comment_on_media(
-                            media.id, username, user_id, hashtag)
-
-                        if comment_result:
-                            self.logger.info(
-                                f"✅ Successfully commented on @{username}'s post")
-
-                        # Sleep between actions
-                        human_sleep()
-
-                    except Exception as e:
-                        self.logger.error(
-                            f"❌ Error interacting with media {media.id}: {e}")
-
-            except Exception as e:
-                self.logger.error(f"❌ Error exploring hashtag {hashtag}: {e}")
-
-    def explore_timeline(self, count: int = 10):
-        """Explore timeline posts and interact with them"""
-        self.logger.info("Exploring timeline")
-
-        try:
-            # Get timeline feed
-            feed_items = self.client.get_timeline_feed()
-
-            for item in feed_items:
-                # Check if we've reached interaction limit
-                if self.daily_interactions >= DAILY_INTERACTION_LIMIT:
-                    self.logger.info(
-                        "Daily interaction limit reached, stopping")
-                    return
-
-                if not hasattr(item, 'media_or_ad'):
-                    continue
-
-                media = item.media_or_ad
-
-                try:
-                    user_id = media.user.pk
-                    username = media.user.username
-
-                    # Comment on post
-                    self.comment_on_media(media.id, username, user_id)
-
-                    # Sleep between actions
-                    human_sleep()
-
-                except Exception as e:
-                    self.logger.error(
-                        f"Error interacting with timeline media: {e}")
-
-                # Limit to specified count
-                count -= 1
-                if count <= 0:
-                    break
-
-        except Exception as e:
-            self.logger.error(f"Error exploring timeline: {e}")
-
-    def check_stories(self, count: int = 5):
-        """Check and react to stories"""
-        self.logger.info("Checking stories")
-
-        try:
-            # در نسخه جدید instagrapi، get_reels_tray نیست و باید از متدهای دیگه استفاده کنیم
-
-            # گرفتن لیست افرادی که دنبال می‌کنیم
-            following = self.client.user_following(self.client.user_id)
-
-            # انتخاب چند کاربر تصادفی
-            selected_users = list(following.keys())
-            random.shuffle(selected_users)
-            # حداکثر 10 کاربر انتخاب می‌کنیم
-            selected_users = selected_users[:min(10, len(selected_users))]
-
-            user_count = 0
-            for user_id in selected_users:
-                # Check if we've reached interaction limit
-                if self.daily_interactions >= DAILY_INTERACTION_LIMIT:
-                    self.logger.info(
-                        "Daily interaction limit reached, stopping")
-                    return
-
-                try:
-                    # دریافت اطلاعات کاربر
-                    user_info = self.client.user_info(user_id)
-                    username = user_info.username
-
-                    self.logger.info(f"Checking stories for user: {username}")
-
-                    # Get user stories
-                    stories = self.client.user_stories(user_id)
-
-                    if stories:
-                        self.logger.info(
-                            f"Found {len(stories)} stories for {username}")
-
-                        # انتخاب یک استوری تصادفی
-                        story = random.choice(stories)
-
-                        # واکنش به استوری
-                        self.react_to_story(story.id, username, user_id)
-
-                        # Sleep between actions
-                        human_sleep()
-
-                        # افزایش شمارنده
-                        user_count += 1
-                        if user_count >= count:
-                            return
-
-                except Exception as e:
-                    self.logger.error(
-                        f"Error checking stories for user {user_id}: {e}")
-
-        except Exception as e:
-            self.logger.error(f"Error checking stories: {e}")
-
-    def interact_with_followers(self, count: int = 5):
-        """Interact with followers by sending DMs"""
-        self.logger.info("Interacting with followers")
-
-        try:
-            # Get followers who we haven't sent a DM recently
-            followers = self.db[get_collection_name("users")].find({
-                "is_follower": True,
-                "$or": [
-                    {"last_interaction": {"$lt": datetime.now() - timedelta(days=7)}},
-                    {"last_interaction": {"$exists": False}}
-                ]
-            }).limit(count)
-
-            for follower in followers:
-                # Check if we've reached interaction limit
-                if self.daily_interactions >= DAILY_INTERACTION_LIMIT:
-                    self.logger.info(
-                        "Daily interaction limit reached, stopping")
-                    return
-
-                user_id = follower["user_id"]
-                username = follower["username"]
-
-                # Send DM
-                self.send_direct_message(user_id, username, "appreciation")
-
-                # Sleep between actions
-                human_sleep()
-
-        except Exception as e:
-            self.logger.error(f"Error interacting with followers: {e}")
 
     def reset_daily_interactions(self):
-        """Reset daily interaction counter"""
+        """بازنشانی شمارنده تعاملات روزانه"""
         self.daily_interactions = 0
-        self.logger.info("Reset daily interaction counter")
+        self.logger.info("بازنشانی شمارنده تعاملات روزانه")
+
+    def _handle_challenge(self, e):
+        """مدیریت چالش‌های اینستاگرام"""
+        self.logger.warning(f"⚠️ چالش اینستاگرام تشخیص داده شد: {e}")
+
+        # ریست کردن کلاینت
+        self.logged_in = False
+
+        # استراحت طولانی
+        long_break = random.randint(10800, 21600)  # 3-6 ساعت
+        self.logger.info(
+            f"⏸ استراحت طولانی برای حفظ امنیت اکانت: {long_break//3600} ساعت")
+
+        # پایان دادن به سشن فعلی
+        self.record_session_end()
+        self.is_running = False
+
+        return False
 
     def run_session(self):
-        """Run a single bot session with natural breaks"""
-        # Set a login timeout
+        """اجرای یک جلسه بات با استراحت‌های طبیعی"""
+        # تنظیم تایم‌اوت لاگین
         login_start_time = datetime.now()
-        login_timeout = 120  # 2 minutes timeout
+        login_timeout = 120  # 2 دقیقه تایم‌اوت
 
-        self.logger.info(f"⏱ Setting login timeout to {login_timeout} seconds")
+        self.logger.info(f"⏱ تنظیم تایم‌اوت لاگین به {login_timeout} ثانیه")
 
         if not self.login():
-            self.logger.error("❌ Login failed, cannot start bot")
+            self.logger.error("❌ لاگین ناموفق بود، نمی‌توان بات را شروع کرد")
             return
 
         login_duration = (datetime.now() - login_start_time).total_seconds()
-        self.logger.info(f"⏱ Login process took {login_duration:.2f} seconds")
+        self.logger.info(f"⏱ فرآیند لاگین {login_duration:.2f} ثانیه طول کشید")
 
         self.is_running = True
         self.session_start_time = datetime.now()
@@ -639,123 +247,173 @@ class InstagramBot:
             timedelta(seconds=get_random_session_duration())
 
         self.logger.info(
-            f"📅 Starting bot session: {self.session_start_time.strftime('%Y-%m-%d %H:%M:%S')} to {self.session_end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            f"📅 شروع جلسه بات: {self.session_start_time.strftime('%Y-%m-%d %H:%M:%S')} تا {self.session_end_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
-        # Main bot loop
+        # ثبت شروع جلسه
+        self.record_session_start()
+
+        # محدودیت اکشن در هر ساعت
+        hourly_action_limit = 5  # حداکثر 5 اکشن در ساعت
+        hourly_actions = 0
+        last_hour_reset = datetime.now()
+
+        # حلقه اصلی بات
         while self.is_running and datetime.now() < self.session_end_time:
             try:
-                # Check if we've reached daily interaction limit
-                if self.daily_interactions >= DAILY_INTERACTION_LIMIT:
+                # بررسی ریست محدودیت ساعتی
+                if (datetime.now() - last_hour_reset).total_seconds() > 3600:
+                    hourly_actions = 0
+                    last_hour_reset = datetime.now()
+                    self.logger.info("🕒 بازنشانی شمارنده اکشن‌های ساعتی")
+
+                # بررسی محدودیت ساعتی
+                if hourly_actions >= hourly_action_limit:
+                    sleep_time = random.randint(
+                        600, 1200)  # استراحت 10-20 دقیقه
                     self.logger.info(
-                        f"⚠️ Daily interaction limit reached ({self.daily_interactions}/{DAILY_INTERACTION_LIMIT}), taking a break")
-                    human_sleep(1800, 3600)  # Sleep 30-60 minutes
+                        f"⚠️ محدودیت اکشن ساعتی رسیده ({hourly_actions}/{hourly_action_limit})، استراحت به مدت {sleep_time} ثانیه")
+                    human_sleep(sleep_time)
                     continue
 
-                # Check and update followers/following
-                self.logger.info("🔄 Checking followers and following status")
-                self.check_and_update_followers()
+                # بررسی اگر به محدودیت تعامل روزانه رسیده‌ایم
+                if self.daily_interactions >= DAILY_INTERACTION_LIMIT:
+                    self.logger.info(
+                        f"⚠️ محدودیت تعامل روزانه رسیده ({self.daily_interactions}/{DAILY_INTERACTION_LIMIT})، استراحت طولانی")
+                    human_sleep(1800, 3600)  # استراحت 30-60 دقیقه
+                    continue
 
-                # Choose a random action based on priorities and time of day
+                # بررسی و به‌روزرسانی دنبال‌کنندگان/دنبال‌شوندگان
+                self.logger.info("🔄 بررسی وضعیت دنبال‌کنندگان و دنبال‌شوندگان")
+                follower_check_result = self.check_and_update_followers()
+
+                if not follower_check_result:
+                    self.logger.warning(
+                        "مشکل در بررسی دنبال‌کنندگان، احتمال چالش امنیتی")
+                    if not self.login():  # تلاش مجدد برای لاگین
+                        break
+
+                # انتخاب تصادفی یک اکشن براساس اولویت‌ها و زمان روز
+                # وزن‌های بیشتر برای اکشن‌های کم خطرتر
                 action = random.choices(
                     ["explore_hashtags", "explore_timeline",
                         "check_stories", "interact_with_followers"],
-                    weights=[0.4, 0.3, 0.2, 0.1],
+                    # وزن‌های تنظیم شده برای کاهش اکشن‌های پرخطر
+                    weights=[0.35, 0.30, 0.25, 0.10],
                     k=1
                 )[0]
 
-                self.logger.info(f"🎯 Selected action: {action}")
+                self.logger.info(f"🎯 اکشن انتخاب شده: {action}")
+
+                action_result = False
 
                 if action == "explore_hashtags":
-                    hashtags = ["travel", "food", "photography",
-                                "nature", "art", "fashion", "fitness"]
-                    selected_hashtags = random.sample(hashtags, 2)
-                    self.logger.info(
-                        f"🔍 Exploring hashtags: {selected_hashtags}")
-                    self.explore_hashtags(
-                        selected_hashtags, count=random.randint(2, 5))
-                elif action == "explore_timeline":
-                    self.logger.info("📱 Exploring timeline")
-                    self.explore_timeline(count=random.randint(3, 8))
-                elif action == "check_stories":
-                    self.logger.info("📊 Checking stories")
-                    self.check_stories(count=random.randint(2, 5))
-                elif action == "interact_with_followers":
-                    self.logger.info("👥 Interacting with followers")
-                    self.interact_with_followers(count=random.randint(1, 3))
+                    # انتخاب هشتگ‌های فارسی برای جستجو
+                    selected_hashtags = random.sample(PERSIAN_HASHTAGS, 2)
+                    self.logger.info(f"🔍 جستجوی هشتگ‌ها: {selected_hashtags}")
+                    # تعداد کمتر برای تعامل در هر هشتگ
+                    action_result = self.explorers.explore_hashtags(selected_hashtags, count=random.randint(
+                        1, 2), update_user_profile_func=self._update_user_profile)
 
-                # Take a natural break between action groups
+                elif action == "explore_timeline":
+                    self.logger.info("📱 بررسی تایم‌لاین")
+                    # تعداد کمتر برای تعامل در تایم‌لاین
+                    action_result = self.explorers.explore_timeline(count=random.randint(
+                        1, 2), update_user_profile_func=self._update_user_profile)
+
+                elif action == "check_stories":
+                    self.logger.info("📊 بررسی استوری‌ها")
+                    # تعداد کمتر برای تعامل با استوری‌ها
+                    action_result = self.explorers.check_stories(count=random.randint(
+                        1, 2), update_user_profile_func=self._update_user_profile)
+
+                elif action == "interact_with_followers":
+                    self.logger.info("👥 تعامل با دنبال‌کنندگان")
+                    # فقط 1 یا 2 نفر در هر جلسه
+                    action_result = self.explorers.interact_with_followers(
+                        count=random.randint(1, 2), update_user_profile_func=self._update_user_profile)
+
+                # اگر چالش امنیتی رخ داده، پایان سشن
+                if action_result is False:
+                    self.logger.warning(
+                        "چالش امنیتی تشخیص داده شد، پایان جلسه")
+                    break
+
+                # افزایش شمارنده اکشن‌های ساعتی
+                hourly_actions += 1
+
+                # استراحت طبیعی بین گروه‌های اکشن
                 sleep_duration = get_random_interval()
                 self.logger.info(
-                    f"⏱ Taking a break for {sleep_duration} seconds")
-                human_sleep(sleep_duration, sleep_duration + 30)
+                    f"⏱ استراحت به مدت {sleep_duration} ثانیه")
+                human_sleep(sleep_duration, sleep_duration + 60)
 
-                # Log current stats
+                # ثبت آمار فعلی
                 self.logger.info(
-                    f"📊 Current stats: {self.daily_interactions}/{DAILY_INTERACTION_LIMIT} interactions today")
+                    f"📊 آمار فعلی: {self.daily_interactions}/{DAILY_INTERACTION_LIMIT} تعامل امروز")
 
             except Exception as e:
-                self.logger.error(f"❌ Error in bot loop: {e}")
+                self.logger.error(f"❌ خطا در حلقه بات: {e}")
                 traceback.print_exc()
-                human_sleep(300, 600)  # Sleep 5-10 minutes on error
+                human_sleep(300, 600)  # استراحت 5-10 دقیقه در صورت خطا
 
-        # End session
-        self._record_session_end()
+        # پایان جلسه
+        self.record_session_end()
         self.is_running = False
-        self.logger.info("✅ Bot session ended")
+        self.logger.info("✅ جلسه بات پایان یافت")
 
-        # Schedule next session after a break
+        # زمان‌بندی جلسه بعدی پس از استراحت
         break_duration = get_random_break_duration()
         next_session_time = datetime.now() + timedelta(seconds=break_duration)
         self.logger.info(
-            f"⏭️ Next session scheduled at {next_session_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            f"⏭️ جلسه بعدی در {next_session_time.strftime('%Y-%m-%d %H:%M:%S')} زمان‌بندی شد")
 
     def run_continuously(self):
-        """Run the bot continuously with natural sessions and breaks"""
+        """اجرای مداوم بات با جلسات طبیعی و استراحت‌ها"""
         def _worker():
-            # Schedule daily reset at midnight
+            # زمان‌بندی بازنشانی روزانه در نیمه‌شب
             schedule.every().day.at("00:00").do(self.reset_daily_interactions)
 
             while True:
                 try:
-                    # Run scheduled tasks
+                    # اجرای وظایف زمان‌بندی شده
                     schedule.run_pending()
 
-                    # If not running, start a new session
+                    # اگر در حال اجرا نیست، شروع جلسه جدید
                     if not self.is_running:
-                        self.logger.info("🔄 Starting a new bot session...")
+                        self.logger.info("🔄 شروع جلسه جدید بات...")
 
                         try:
                             self.run_session()
                         except Exception as e:
-                            self.logger.error(f"❌ Error in session: {e}")
+                            self.logger.error(f"❌ خطا در جلسه: {e}")
                             traceback.print_exc()
                             self.is_running = False
-                            # Wait 5 minutes before trying again
+                            # انتظار 5 دقیقه قبل از تلاش مجدد
                             time.sleep(300)
 
-                        # After session ends, take a break before next session
+                        # پس از پایان جلسه، استراحت قبل از جلسه بعدی
                         break_duration = get_random_break_duration()
                         self.logger.info(
-                            f"⏸ Taking a break for {break_duration/60:.1f} minutes")
+                            f"⏸ استراحت به مدت {break_duration/60:.1f} دقیقه")
                         human_sleep(break_duration, break_duration + 300)
 
                     time.sleep(1)
 
                 except Exception as e:
-                    self.logger.error(f"❌ Error in worker thread: {e}")
+                    self.logger.error(f"❌ خطا در ترد کارگر: {e}")
                     traceback.print_exc()
                     time.sleep(60)
 
-        # Start worker thread
+        # شروع ترد کارگر
         worker_thread = threading.Thread(target=_worker)
         worker_thread.daemon = True
         worker_thread.start()
 
-        self.logger.info("🤖 Bot started in continuous mode")
+        self.logger.info("🤖 بات در حالت مداوم شروع شد")
         return worker_thread
 
     def stop(self):
-        """Stop the bot"""
+        """توقف بات"""
         self.is_running = False
-        self._record_session_end()
-        self.logger.info("Bot stopped")
+        self.record_session_end()
+        self.logger.info("بات متوقف شد")
