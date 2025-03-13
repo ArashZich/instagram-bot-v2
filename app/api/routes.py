@@ -50,52 +50,6 @@ def convert_objectid(item):
         item["id"] = str(item.pop("_id"))
     return item
 
-# Helper for relative time
-
-
-def get_relative_time(timestamp):
-    """تبدیل timestamp به زمان نسبی (مثلاً '2 ساعت پیش')"""
-    if not timestamp:
-        return "نامشخص"
-
-    now = datetime.now()
-    diff = now - timestamp
-
-    # ثانیه‌ها
-    seconds = diff.total_seconds()
-
-    if seconds < 60:
-        return "چند لحظه پیش"
-
-    # دقیقه‌ها
-    minutes = int(seconds / 60)
-    if minutes < 60:
-        return f"{minutes} دقیقه پیش"
-
-    # ساعت‌ها
-    hours = int(seconds / 3600)
-    if hours < 24:
-        return f"{hours} ساعت پیش"
-
-    # روزها
-    days = int(seconds / 86400)
-    if days < 7:
-        return f"{days} روز پیش"
-
-    # هفته‌ها
-    weeks = int(days / 7)
-    if weeks < 4:
-        return f"{weeks} هفته پیش"
-
-    # ماه‌ها
-    months = int(days / 30)
-    if months < 12:
-        return f"{months} ماه پیش"
-
-    # سال‌ها
-    years = int(days / 365)
-    return f"{years} سال پیش"
-
 # Database dependency
 
 
@@ -109,9 +63,10 @@ async def root():
     """API health check endpoint"""
     return {"status": "ok", "message": "Instagram Bot API is running"}
 
+# Interactions endpoints
 
-# Interactions endpoints with improved data
-@app.get("/interactions/", tags=["Interactions"])
+
+@app.get("/interactions/", response_model=List[InteractionResponse], tags=["Interactions"])
 async def get_interactions(
     limit: int = Query(20, ge=1, le=100),
     skip: int = Query(0, ge=0),
@@ -122,15 +77,14 @@ async def get_interactions(
     end_date: Optional[str] = None,
     db=Depends(get_db)
 ):
-    """Get interactions with optional filtering and improved data"""
+    """Get interactions with optional filtering"""
     query = {}
 
     if interaction_type:
         query["interaction_type"] = interaction_type
 
     if username:
-        # جستجوی غیرحساس به حروف بزرگ و کوچک
-        query["username"] = {'$regex': username, '$options': 'i'}
+        query["username"] = username
 
     if user_id:
         query["user_id"] = user_id
@@ -143,64 +97,40 @@ async def get_interactions(
             date_query["$lte"] = datetime.fromisoformat(end_date)
         query["timestamp"] = date_query
 
-    # Get total count for pagination
-    total_count = await db[get_collection_name("interactions")].count_documents(query)
-
     cursor = db[get_collection_name("interactions")].find(
         query).sort("timestamp", -1).skip(skip).limit(limit)
 
     interactions = []
     async for doc in cursor:
-        # Add relative time for better display
-        doc["relative_time"] = get_relative_time(doc["timestamp"])
         interactions.append(convert_objectid(doc))
 
-    return {
-        "data": interactions,
-        "total": total_count,
-        "pages": (total_count + limit - 1) // limit if limit > 0 else 1,
-        "page": (skip // limit) + 1 if limit > 0 else 1
-    }
+    return interactions
 
 
-@app.get("/interactions/{interaction_id}", tags=["Interactions"])
+@app.get("/interactions/{interaction_id}", response_model=InteractionResponse, tags=["Interactions"])
 async def get_interaction(
     interaction_id: str = Path(..., description="The ID of the interaction"),
     db=Depends(get_db)
 ):
-    """Get a specific interaction by ID with more useful data"""
+    """Get a specific interaction by ID"""
     try:
         doc = await db[get_collection_name("interactions")].find_one({"_id": ObjectId(interaction_id)})
         if not doc:
             raise HTTPException(
                 status_code=404, detail="Interaction not found")
-
-        # Add relative time
-        doc["relative_time"] = get_relative_time(doc["timestamp"])
-
-        # Add user information if available
-        if doc.get("user_id"):
-            user_info = await db[get_collection_name("users")].find_one({"user_id": doc["user_id"]})
-            if user_info:
-                doc["user_info"] = {
-                    "full_name": user_info.get("full_name"),
-                    "is_follower": user_info.get("is_follower", False),
-                    "is_following": user_info.get("is_following", False),
-                    "interaction_count": user_info.get("interaction_count", 0)
-                }
-
         return convert_objectid(doc)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# Users endpoints
 
-# Users endpoints with improved data
-@app.get("/users/", tags=["Users"])
+
+@app.get("/users/", response_model=List[UserProfileResponse], tags=["Users"])
 async def get_users(
     params: UserQueryParams = Depends(),
     db=Depends(get_db)
 ):
-    """Get user profiles with more useful information"""
+    """Get user profiles with optional filtering"""
     query = {}
 
     if params.is_follower is not None:
@@ -209,125 +139,55 @@ async def get_users(
     if params.is_following is not None:
         query["is_following"] = params.is_following
 
-    # Get total count for pagination
-    total_count = await db[get_collection_name("users")].count_documents(query)
-
     cursor = db[get_collection_name("users")].find(query).sort(
         "last_interaction", -1).skip(params.skip).limit(params.limit)
 
     users = []
     async for doc in cursor:
-        # Add relative time for last interaction
-        if doc.get("last_interaction"):
-            doc["relative_last_interaction"] = get_relative_time(
-                doc["last_interaction"])
-
-        # Add recent interaction count (7 days)
-        recent_interactions_count = await db[get_collection_name("interactions")].count_documents({
-            "user_id": doc["user_id"],
-            "timestamp": {"$gte": datetime.now() - timedelta(days=7)}
-        })
-        doc["recent_interactions_count"] = recent_interactions_count
-
         users.append(convert_objectid(doc))
 
-    return {
-        "data": users,
-        "total": total_count,
-        "pages": (total_count + params.limit - 1) // params.limit if params.limit > 0 else 1,
-        "page": (params.skip // params.limit) + 1 if params.limit > 0 else 1
-    }
+    return users
 
 
-@app.get("/users/{user_id}", tags=["Users"])
+@app.get("/users/{user_id}", response_model=UserProfileResponse, tags=["Users"])
 async def get_user(
     user_id: str = Path(..., description="The user ID"),
     db=Depends(get_db)
 ):
-    """Get a specific user profile with enhanced data"""
+    """Get a specific user profile"""
     doc = await db[get_collection_name("users")].find_one({"user_id": user_id})
     if not doc:
         raise HTTPException(status_code=404, detail="User not found")
-
-    # Add relative time for last interaction
-    if doc.get("last_interaction"):
-        doc["relative_last_interaction"] = get_relative_time(
-            doc["last_interaction"])
-
-    # Add interaction type distribution
-    interaction_types_pipeline = [
-        {"$match": {"user_id": user_id}},
-        {"$group": {"_id": "$interaction_type", "count": {"$sum": 1}}},
-        {"$sort": {"count": -1}}
-    ]
-
-    interaction_types_cursor = db[get_collection_name(
-        "interactions")].aggregate(interaction_types_pipeline)
-
-    interaction_types = {}
-    async for type_doc in await interaction_types_cursor.to_list(length=10):
-        interaction_types[type_doc["_id"]] = type_doc["count"]
-
-    doc["interaction_types"] = interaction_types
-
-    # Add 5 most recent interactions
-    recent_interactions_cursor = db[get_collection_name("interactions")].find(
-        {"user_id": user_id}
-    ).sort("timestamp", -1).limit(5)
-
-    recent_interactions = []
-    async for interaction in await recent_interactions_cursor.to_list(length=5):
-        interaction["relative_time"] = get_relative_time(
-            interaction["timestamp"])
-        recent_interactions.append(convert_objectid(interaction))
-
-    doc["recent_interactions"] = recent_interactions
-
     return convert_objectid(doc)
 
 
-@app.get("/users/{user_id}/interactions", tags=["Users"])
+@app.get("/users/{user_id}/interactions", response_model=List[InteractionResponse], tags=["Users"])
 async def get_user_interactions(
     user_id: str = Path(..., description="The user ID"),
     limit: int = Query(20, ge=1, le=100),
     skip: int = Query(0, ge=0),
-    interaction_type: Optional[str] = None,
     db=Depends(get_db)
 ):
-    """Get all interactions for a specific user with enhanced data"""
-    query = {"user_id": user_id}
-
-    if interaction_type:
-        query["interaction_type"] = interaction_type
-
-    # Count total for pagination
-    total_count = await db[get_collection_name("interactions")].count_documents(query)
-
+    """Get all interactions for a specific user"""
     cursor = db[get_collection_name("interactions")].find(
-        query
+        {"user_id": user_id}
     ).sort("timestamp", -1).skip(skip).limit(limit)
 
     interactions = []
     async for doc in cursor:
-        # Add relative time
-        doc["relative_time"] = get_relative_time(doc["timestamp"])
         interactions.append(convert_objectid(doc))
 
-    return {
-        "data": interactions,
-        "total": total_count,
-        "pages": (total_count + limit - 1) // limit if limit > 0 else 1,
-        "page": (skip // limit) + 1 if limit > 0 else 1
-    }
+    return interactions
+
+# Statistics endpoints
 
 
-# Enhanced Statistics endpoint
-@app.get("/stats", tags=["Statistics"])
+@app.get("/stats", response_model=StatsResponse, tags=["Statistics"])
 async def get_stats(
     params: StatsQueryParams = Depends(),
     db=Depends(get_db)
 ):
-    """Get enriched bot statistics for the specified time range"""
+    """Get bot statistics for the specified time range"""
     # Calculate start date based on time range
     end_date = datetime.now()
 
@@ -357,7 +217,7 @@ async def get_stats(
     interaction_types = []
     total_interactions = 0
 
-    async for doc in await interaction_cursor.to_list(length=10):
+    async for doc in interaction_cursor:
         count = doc["count"]
         interaction_types.append(InteractionCount(
             interaction_type=doc["_id"],
@@ -365,19 +225,11 @@ async def get_stats(
         ))
         total_interactions += count
 
-    # Get time series data with better granularity
-    time_format = "%Y-%m-%d"
-    if params.time_range == TimeRange.DAILY:
-        time_format = "%Y-%m-%d %H:00"  # Hourly for daily view
-    elif params.time_range == TimeRange.WEEKLY:
-        time_format = "%Y-%m-%d"  # Daily for weekly view
-    elif params.time_range == TimeRange.YEARLY:
-        time_format = "%Y-%m"  # Monthly for yearly view
-
+    # Get time series data (daily counts)
     time_series_pipeline = [
         {"$match": {"timestamp": {"$gte": start_date, "$lte": end_date}}},
         {"$group": {
-            "_id": {"$dateToString": {"format": time_format, "date": "$timestamp"}},
+            "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp"}},
             "count": {"$sum": 1}
         }},
         {"$sort": {"_id": 1}}
@@ -387,13 +239,13 @@ async def get_stats(
         "interactions")].aggregate(time_series_pipeline)
 
     time_series = []
-    async for doc in await time_series_cursor.to_list(length=100):
+    async for doc in time_series_cursor:
         time_series.append(TimeSeriesPoint(
             date=doc["_id"],
             count=doc["count"]
         ))
 
-    # Get user stats with additional data
+    # Get user stats
     total_users = await db[get_collection_name("users")].count_documents({})
     followers_count = await db[get_collection_name("users")].count_documents({"is_follower": True})
     following_count = await db[get_collection_name("users")].count_documents({"is_following": True})
@@ -401,18 +253,7 @@ async def get_stats(
         {"first_seen": {"$gte": start_date, "$lte": end_date}}
     )
 
-    # Get follow/unfollow counts
-    new_follows = await db[get_collection_name("interactions")].count_documents({
-        "interaction_type": "follow",
-        "timestamp": {"$gte": start_date, "$lte": end_date}
-    })
-
-    unfollows = await db[get_collection_name("interactions")].count_documents({
-        "interaction_type": "unfollow",
-        "timestamp": {"$gte": start_date, "$lte": end_date}
-    })
-
-    # Get most interacted users with enhanced data
+    # Get most interacted users
     most_interacted_pipeline = [
         {"$sort": {"interaction_count": -1}},
         {"$limit": params.limit}
@@ -422,28 +263,10 @@ async def get_stats(
         "users")].aggregate(most_interacted_pipeline)
 
     most_interacted = []
-    async for doc in await most_interacted_cursor.to_list(length=params.limit):
-        # Add last interaction time in relative format
-        if doc.get("last_interaction"):
-            doc["relative_last_interaction"] = get_relative_time(
-                doc["last_interaction"])
-
-        # Get main interaction type
-        user_id = doc["user_id"]
-        main_interaction_pipeline = [
-            {"$match": {"user_id": user_id}},
-            {"$group": {"_id": "$interaction_type", "count": {"$sum": 1}}},
-            {"$sort": {"count": -1}},
-            {"$limit": 1}
-        ]
-
-        main_interaction_result = await db[get_collection_name("interactions")].aggregate(main_interaction_pipeline).to_list(length=1)
-        if main_interaction_result:
-            doc["main_interaction_type"] = main_interaction_result[0]["_id"]
-
+    async for doc in most_interacted_cursor:
         most_interacted.append(convert_objectid(doc))
 
-    # Get bot stats with improved runtime calculation
+    # Get bot stats
     session_count = await db[get_collection_name("sessions")].count_documents({})
     active_session = await db[get_collection_name("sessions")].find_one(
         {"is_active": True},
@@ -454,7 +277,7 @@ async def get_stats(
         sort=[("started_at", -1)]
     )
 
-    # Better runtime format
+    # Calculate total runtime
     runtime_pipeline = [
         {"$match": {"ended_at": {"$exists": True}}},
         {"$project": {
@@ -463,86 +286,40 @@ async def get_stats(
         {"$group": {"_id": None, "total_duration": {"$sum": "$duration"}}}
     ]
 
-    runtime_result = await db[get_collection_name("sessions")].aggregate(runtime_pipeline).to_list(length=1)
+    runtime_result = await db[get_collection_name("sessions")].aggregate(runtime_pipeline).to_list(1)
 
     total_runtime = "0 hours"
     if runtime_result and len(runtime_result) > 0:
-        # Convert from milliseconds with better format
+        # Convert from milliseconds
         total_seconds = runtime_result[0]["total_duration"] / 1000
         hours = int(total_seconds / 3600)
-        minutes = int((total_seconds % 3600) / 60)
-        total_runtime = f"{hours} ساعت و {minutes} دقیقه"
+        total_runtime = f"{hours} hours"
 
-    # Calculate period runtime
-    period_runtime_pipeline = [
-        {"$match": {
-            "$or": [
-                {"started_at": {"$gte": start_date, "$lte": end_date}},
-                {"ended_at": {"$gte": start_date, "$lte": end_date}}
-            ]
-        }},
-        {"$project": {
-            "start": {"$max": ["$started_at", start_date]},
-            "end": {"$min": [{"$ifNull": ["$ended_at", end_date]}, end_date]}
-        }},
-        {"$project": {
-            "duration": {"$subtract": ["$end", "$start"]}
-        }},
-        {"$group": {"_id": None, "total_duration": {"$sum": "$duration"}}}
-    ]
-
-    period_runtime_result = await db[get_collection_name("sessions")].aggregate(period_runtime_pipeline).to_list(length=1)
-
-    period_runtime = "0 hours"
-    if period_runtime_result and len(period_runtime_result) > 0:
-        period_seconds = period_runtime_result[0]["total_duration"] / 1000
-        hours = int(period_seconds / 3600)
-        minutes = int((period_seconds % 3600) / 60)
-        period_runtime = f"{hours} ساعت و {minutes} دقیقه"
-
-    # Combine stats with enriched data
-    return {
-        "interactions": {
-            "total_interactions": total_interactions,
-            "interaction_types": interaction_types,
-            "time_series": time_series,
-            "hourly_rate": round(total_interactions / ((end_date - start_date).total_seconds() / 3600), 2) if (end_date - start_date).total_seconds() > 0 else 0
-        },
-        "users": {
-            "total_users": total_users,
-            "followers_count": followers_count,
-            "following_count": following_count,
-            "new_users_count": new_users_count,
-            "most_interacted": most_interacted,
-            "follows_unfollows": {
-                "new_follows": new_follows,
-                "unfollows": unfollows,
-                "net_change": new_follows - unfollows
-            },
-            "ratio": {
-                "followers_following": round(followers_count / following_count, 2) if following_count > 0 else 0
-            }
-        },
-        "bot": {
-            "total_runtime": total_runtime,
-            "period_runtime": period_runtime,
-            "session_count": session_count,
-            "period_sessions": await db[get_collection_name("sessions")].count_documents({
-                "started_at": {"$gte": start_date, "$lte": end_date}
-            }),
-            "last_session": last_session["started_at"] if last_session else None,
-            "last_session_relative": get_relative_time(last_session["started_at"]) if last_session else "هرگز",
-            "is_active": active_session is not None
-        },
-        "period": {
-            "start_date": start_date,
-            "end_date": end_date,
-            "duration_days": (end_date - start_date).days
-        }
-    }
-
+    # Combine stats
+    return StatsResponse(
+        interactions=InteractionStats(
+            total_interactions=total_interactions,
+            interaction_types=interaction_types,
+            time_series=time_series
+        ),
+        users=UserStats(
+            total_users=total_users,
+            followers_count=followers_count,
+            following_count=following_count,
+            new_users_count=new_users_count,
+            most_interacted=most_interacted
+        ),
+        bot=BotStats(
+            total_runtime=total_runtime,
+            session_count=session_count,
+            last_session=last_session["started_at"] if last_session else None,
+            is_active=active_session is not None
+        )
+    )
 
 # Bot control endpoints
+
+
 @app.post("/bot/start", tags=["Bot Control"])
 async def start_bot():
     """Start the Instagram bot (placeholder - bot runs in separate process)"""
