@@ -32,12 +32,12 @@ REACTION_PROBABILITY = float(
 DM_PROBABILITY = float(os.getenv("DM_PROBABILITY", "0.05"))
 
 # فواصل زمانی تصادفی برای رفتار شبیه انسان (به ثانیه)
-MIN_ACTION_INTERVAL = 120  # افزایش از 30 به 120
-MAX_ACTION_INTERVAL = 480  # افزایش از 180 به 480
-MIN_SESSION_DURATION = 3600  # افزایش از 1800 (30 دقیقه) به 3600 (1 ساعت)
-MAX_SESSION_DURATION = 10800  # افزایش از 7200 (2 ساعت) به 10800 (3 ساعت)
-MIN_BREAK_DURATION = 3600  # افزایش از 1800 (30 دقیقه) به 3600 (1 ساعت)
-MAX_BREAK_DURATION = 7200  # افزایش از 3600 (1 ساعت) به 7200 (2 ساعت)
+MIN_ACTION_INTERVAL = 15  # کاهش از 120 به 15 ثانیه
+MAX_ACTION_INTERVAL = 60  # کاهش از 480 به 60 ثانیه
+MIN_SESSION_DURATION = 1800  # کاهش از 3600 (1 ساعت) به 1800 (30 دقیقه)
+MAX_SESSION_DURATION = 3600  # کاهش از 10800 (3 ساعت) به 3600 (1 ساعت)
+MIN_BREAK_DURATION = 900  # کاهش از 3600 (1 ساعت) به 900 (15 دقیقه)
+MAX_BREAK_DURATION = 1800  # کاهش از 7200 (2 ساعت) به 1800 (30 دقیقه)
 
 # هشتگ‌های فارسی برای جستجو
 PERSIAN_HASHTAGS = [

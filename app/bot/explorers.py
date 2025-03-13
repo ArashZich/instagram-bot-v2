@@ -25,54 +25,59 @@ class InstagramExplorers:
                     f"تعداد {len(medias)} پست برای #{hashtag} یافت شد")
 
                 # تعامل تصادفی با تعدادی از پست‌ها (نه همه آنها)
-                selected_medias = random.sample(
-                    medias, min(len(medias), random.randint(1, 3)))
+                if len(medias) > 0:
+                    # محدود کردن تعداد انتخاب به حداکثر تعداد موارد موجود
+                    num_to_select = min(len(medias), random.randint(1, 3))
+                    selected_medias = random.sample(medias, num_to_select)
 
-                for i, media in enumerate(selected_medias):
-                    try:
-                        user_id = media.user.pk
-                        username = media.user.username
+                    for i, media in enumerate(selected_medias):
+                        try:
+                            user_id = media.user.pk
+                            username = media.user.username
 
-                        self.logger.info(
-                            f"پست {i+1}/{len(selected_medias)}: تعامل با پست @{username}")
-
-                        # بررسی محتوای فارسی
-                        has_persian = False
-                        if hasattr(media, 'caption') and media.caption:
-                            has_persian = is_persian_content(media.caption)
-
-                        # اولویت دادن به محتوای فارسی
-                        if has_persian:
                             self.logger.info(
-                                f"✅ محتوای فارسی یافت شد: {media.caption[:30] if media.caption else ''}...")
-                            # تعامل با محتوای فارسی
-                            comment_result = self.actions.comment_on_media(
-                                media.id, username, user_id, hashtag, update_user_profile_func)
+                                f"پست {i+1}/{len(selected_medias)}: تعامل با پست @{username}")
 
-                            if comment_result:
+                            # بررسی محتوای فارسی
+                            has_persian = False
+                            if hasattr(media, 'caption') and media.caption:
+                                has_persian = is_persian_content(media.caption)
+
+                            # اولویت دادن به محتوای فارسی
+                            if has_persian:
                                 self.logger.info(
-                                    f"✅ نظر با موفقیت برای @{username} ثبت شد")
-                        else:
-                            # شانس کمتر برای تعامل با محتوای غیر فارسی
-                            if random.random() < 0.3:  # 30% احتمال
+                                    f"✅ محتوای فارسی یافت شد: {media.caption[:30] if media.caption else ''}...")
+                                # تعامل با محتوای فارسی
                                 comment_result = self.actions.comment_on_media(
                                     media.id, username, user_id, hashtag, update_user_profile_func)
+
                                 if comment_result:
                                     self.logger.info(
                                         f"✅ نظر با موفقیت برای @{username} ثبت شد")
+                            else:
+                                # شانس کمتر برای تعامل با محتوای غیر فارسی
+                                if random.random() < 0.3:  # 30% احتمال
+                                    comment_result = self.actions.comment_on_media(
+                                        media.id, username, user_id, hashtag, update_user_profile_func)
+                                    if comment_result:
+                                        self.logger.info(
+                                            f"✅ نظر با موفقیت برای @{username} ثبت شد")
 
-                        # استراحت بین اکشن‌ها
-                        human_sleep(30, 90)  # استراحت طولانی‌تر بین اکشن‌ها
+                            # استراحت بین اکشن‌ها
+                            human_sleep(15, 30)  # استراحت کوتاه‌تر بین اکشن‌ها
 
-                    except Exception as e:
-                        self.logger.error(
-                            f"❌ خطا در تعامل با رسانه {media.id}: {e}")
+                        except Exception as e:
+                            self.logger.error(
+                                f"❌ خطا در تعامل با رسانه {media.id}: {e}")
 
-                # استراحت طولانی بین هر هشتگ
-                sleep_time = random.randint(120, 300)  # 2-5 دقیقه
-                self.logger.info(
-                    f"⏱ استراحت به مدت {sleep_time} ثانیه قبل از هشتگ بعدی")
-                human_sleep(sleep_time)
+                    # استراحت کوتاه‌تر بین هر هشتگ
+                    sleep_time = random.randint(30, 60)  # 30 ثانیه تا 1 دقیقه
+                    self.logger.info(
+                        f"⏱ استراحت به مدت {sleep_time} ثانیه قبل از هشتگ بعدی")
+                    human_sleep(sleep_time)
+                else:
+                    self.logger.warning(
+                        f"هیچ پستی برای هشتگ {hashtag} یافت نشد")
 
             except Exception as e:
                 if "challenge_required" in str(e).lower():
@@ -91,43 +96,97 @@ class InstagramExplorers:
             # دریافت فید تایم‌لاین
             feed_items = self.client.get_timeline_feed()
 
-            # انتخاب تصادفی تعدادی از پست‌ها (نه همه آنها)
-            selected_items = random.sample(feed_items, min(
-                len(feed_items), random.randint(1, 3)))
+            # بررسی و تبدیل feed_items به یک لیست اگر نیست
+            media_items = []
+            if hasattr(feed_items, 'items'):
+                # اگر feed_items یک شی با ویژگی items است
+                media_items = feed_items.items
+            elif isinstance(feed_items, dict) and 'items' in feed_items:
+                # اگر feed_items یک دیکشنری با کلید items است
+                media_items = feed_items['items']
+            elif isinstance(feed_items, list):
+                # اگر feed_items قبلاً یک لیست است
+                media_items = feed_items
+            else:
+                self.logger.warning(
+                    f"ساختار نامشخص برای feed_items: {type(feed_items)}")
+                # در صورت ساختار نامشخص، از یک لیست خالی استفاده می‌کنیم
+                media_items = []
 
-            for item in selected_items:
-                if not hasattr(item, 'media_or_ad'):
-                    continue
+            self.logger.info(
+                f"تعداد {len(media_items)} آیتم در تایم‌لاین یافت شد")
 
-                media = item.media_or_ad
+            # انتخاب تصادفی تعدادی از پست‌ها (اگر موارد کافی موجود باشند)
+            if len(media_items) > 0:
+                # محدود کردن تعداد انتخاب به حداکثر تعداد موارد موجود
+                num_to_select = min(len(media_items), random.randint(1, 3))
+                selected_items = random.sample(media_items, num_to_select)
 
-                try:
-                    user_id = media.user.pk
-                    username = media.user.username
+                for item in selected_items:
+                    try:
+                        # بررسی ساختار آیتم
+                        if hasattr(item, 'media_or_ad'):
+                            media = item.media_or_ad
+                        elif isinstance(item, dict) and 'media_or_ad' in item:
+                            media = item['media_or_ad']
+                        else:
+                            self.logger.warning(
+                                f"ساختار آیتم نامشخص است: {type(item)}")
+                            continue
 
-                    # بررسی محتوای فارسی
-                    has_persian = False
-                    if hasattr(media, 'caption') and media.caption:
-                        has_persian = is_persian_content(media.caption)
+                        # استخراج اطلاعات کاربر
+                        user_id = None
+                        username = None
 
-                    # اولویت دادن به محتوای فارسی
-                    if has_persian:
-                        self.logger.info(
-                            f"✅ محتوای فارسی در تایم‌لاین یافت شد: {media.caption[:30] if media.caption else ''}...")
-                        # تعامل با محتوای فارسی
-                        comment_result = self.actions.comment_on_media(
-                            media.id, username, user_id, None, update_user_profile_func)
-                    else:
-                        # شانس کمتر برای تعامل با محتوای غیر فارسی
-                        if random.random() < 0.2:  # 20% احتمال
+                        if hasattr(media, 'user'):
+                            user_id = media.user.pk
+                            username = media.user.username
+                        elif isinstance(media, dict) and 'user' in media:
+                            user_id = media['user']['pk']
+                            username = media['user']['username']
+                        else:
+                            self.logger.warning("اطلاعات کاربر یافت نشد")
+                            continue
+
+                        # بررسی محتوای فارسی
+                        has_persian = False
+                        caption = None
+
+                        if hasattr(media, 'caption') and media.caption:
+                            caption = media.caption
+                        elif isinstance(media, dict) and 'caption' in media and media['caption']:
+                            caption = media['caption']
+
+                        if caption:
+                            has_persian = is_persian_content(caption)
+
+                        # اولویت دادن به محتوای فارسی
+                        if has_persian:
+                            self.logger.info(
+                                f"✅ محتوای فارسی در تایم‌لاین یافت شد: {caption[:30]}...")
+                            # تعامل با محتوای فارسی
+                            media_id = media.id if hasattr(
+                                media, 'id') else media.get('id')
                             comment_result = self.actions.comment_on_media(
-                                media.id, username, user_id, None, update_user_profile_func)
+                                media_id, username, user_id, None, update_user_profile_func)
+                        else:
+                            # شانس کمتر برای تعامل با محتوای غیر فارسی
+                            if random.random() < 0.2:  # 20% احتمال
+                                media_id = media.id if hasattr(
+                                    media, 'id') else media.get('id')
+                                comment_result = self.actions.comment_on_media(
+                                    media_id, username, user_id, None, update_user_profile_func)
 
-                    # استراحت بین اکشن‌ها
-                    human_sleep(40, 100)  # استراحت طولانی‌تر
+                        # استراحت بین اکشن‌ها
+                        human_sleep(15, 30)  # استراحت کوتاه‌تر
 
-                except Exception as e:
-                    self.logger.error(f"خطا در تعامل با رسانه تایم‌لاین: {e}")
+                    except Exception as e:
+                        self.logger.error(
+                            f"خطا در تعامل با رسانه تایم‌لاین: {e}")
+                        import traceback
+                        self.logger.error(traceback.format_exc())
+            else:
+                self.logger.warning("هیچ پستی در تایم‌لاین یافت نشد")
 
             return True
 
@@ -136,6 +195,8 @@ class InstagramExplorers:
                 self.logger.error("❌ چالش امنیتی در هنگام بررسی تایم‌لاین")
                 return False
             self.logger.error(f"خطا در بررسی تایم‌لاین: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
             return False
 
     def check_stories(self, count: int = 3, update_user_profile_func=None):
@@ -146,48 +207,53 @@ class InstagramExplorers:
             # دریافت لیست افرادی که دنبال می‌کنیم
             following = self.client.user_following(self.client.user_id)
 
-            # انتخاب تصادفی چند کاربر
-            selected_users = list(following.keys())
-            random.shuffle(selected_users)
-            # حداکثر تعداد محدودی کاربر انتخاب می‌کنیم
-            selected_users = selected_users[:min(5, len(selected_users))]
+            # بررسی اگر following یک دیکشنری است
+            if isinstance(following, dict) and following:
+                # انتخاب تصادفی چند کاربر
+                selected_users = list(following.keys())
+                random.shuffle(selected_users)
+                # حداکثر تعداد محدودی کاربر انتخاب می‌کنیم
+                selected_users = selected_users[:min(5, len(selected_users))]
 
-            user_count = 0
-            for user_id in selected_users:
-                try:
-                    # دریافت اطلاعات کاربر
-                    user_info = self.client.user_info(user_id)
-                    username = user_info.username
+                user_count = 0
+                for user_id in selected_users:
+                    try:
+                        # دریافت اطلاعات کاربر
+                        user_info = self.client.user_info(user_id)
+                        username = user_info.username
 
-                    self.logger.info(f"بررسی استوری‌های کاربر: {username}")
+                        self.logger.info(f"بررسی استوری‌های کاربر: {username}")
 
-                    # دریافت استوری‌های کاربر
-                    stories = self.client.user_stories(user_id)
+                        # دریافت استوری‌های کاربر
+                        stories = self.client.user_stories(user_id)
 
-                    if stories:
-                        # شانس تصادفی برای واکنش
-                        if random.random() < 0.4:  # 40% احتمال
-                            self.logger.info(
-                                f"تعداد {len(stories)} استوری برای {username} یافت شد")
+                        if stories:
+                            # شانس تصادفی برای واکنش
+                            if random.random() < 0.4:  # 40% احتمال
+                                self.logger.info(
+                                    f"تعداد {len(stories)} استوری برای {username} یافت شد")
 
-                            # انتخاب یک استوری تصادفی
-                            story = random.choice(stories)
+                                # انتخاب یک استوری تصادفی
+                                story = random.choice(stories)
 
-                            # واکنش به استوری
-                            self.actions.react_to_story(
-                                story.id, username, user_id, update_user_profile_func)
+                                # واکنش به استوری
+                                self.actions.react_to_story(
+                                    story.id, username, user_id, update_user_profile_func)
 
-                            # افزایش شمارنده
-                            user_count += 1
-                            if user_count >= count:
-                                return True
+                                # افزایش شمارنده
+                                user_count += 1
+                                if user_count >= count:
+                                    return True
 
-                    # استراحت بین هر کاربر
-                    human_sleep(30, 90)
+                        # استراحت بین هر کاربر
+                        human_sleep(15, 30)  # کاهش زمان استراحت
 
-                except Exception as e:
-                    self.logger.error(
-                        f"خطا در بررسی استوری‌های کاربر {user_id}: {e}")
+                    except Exception as e:
+                        self.logger.error(
+                            f"خطا در بررسی استوری‌های کاربر {user_id}: {e}")
+            else:
+                self.logger.warning(
+                    f"لیست following نامعتبر است: {type(following)}")
 
             return True
 
@@ -210,8 +276,8 @@ class InstagramExplorers:
             followers = self.db[get_collection_name("users")].find({
                 "is_follower": True,
                 "$or": [
-                    # دو هفته
-                    {"last_interaction": {"$lt": datetime.now() - timedelta(days=14)}},
+                    # یک هفته (کاهش از دو هفته)
+                    {"last_interaction": {"$lt": datetime.now() - timedelta(days=7)}},
                     {"last_interaction": {"$exists": False}}
                 ]
             }).limit(10)  # دریافت تعداد بیشتری برای انتخاب تصادفی
@@ -234,8 +300,8 @@ class InstagramExplorers:
                     self.actions.send_direct_message(
                         user_id, username, "appreciation", update_user_profile_func)
 
-                # استراحت طولانی بین هر پیام
-                human_sleep(60, 180)  # 1-3 دقیقه استراحت
+                # استراحت کوتاه‌تر بین هر پیام
+                human_sleep(30, 60)  # 30-60 ثانیه استراحت
 
             return True
 

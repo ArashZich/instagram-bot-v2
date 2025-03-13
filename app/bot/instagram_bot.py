@@ -35,6 +35,8 @@ class InstagramBot(SessionManager):
         # ایجاد کلاس‌های کمکی
         self.actions = InstagramActions(self.client, self.db, self.session_id)
         self.explorers = InstagramExplorers(self.client, self.actions)
+        # اضافه کردن ارجاع به دیتابیس برای explorer
+        self.explorers.db = self.db
 
         # ایجاد کالکشن‌ها اگر وجود ندارند
         self._initialize_collections()
@@ -56,72 +58,81 @@ class InstagramBot(SessionManager):
 
     def _update_user_profile(self, user_id: str, username: str, interaction_type: str):
         """به‌روزرسانی یا ایجاد پروفایل کاربر در دیتابیس"""
-        # دریافت پروفایل کاربر موجود
-        user_data = self.db[get_collection_name("users")].find_one({
-            "user_id": user_id})
+        try:
+            # دریافت پروفایل کاربر موجود
+            user_data = self.db[get_collection_name("users")].find_one({
+                "user_id": user_id})
 
-        if user_data:
-            # به‌روزرسانی پروفایل موجود
-            self.db[get_collection_name("users")].update_one(
-                {"user_id": user_id},
-                {
-                    "$set": {
-                        "last_interaction": datetime.now(),
-                    },
-                    "$inc": {
-                        "interaction_count": 1
-                    },
-                    "$addToSet": {
-                        "metadata.interaction_types": interaction_type
+            if user_data:
+                # به‌روزرسانی پروفایل موجود
+                self.db[get_collection_name("users")].update_one(
+                    {"user_id": user_id},
+                    {
+                        "$set": {
+                            "last_interaction": datetime.now(),
+                        },
+                        "$inc": {
+                            "interaction_count": 1
+                        },
+                        "$addToSet": {
+                            "metadata.interaction_types": interaction_type
+                        }
                     }
-                }
-            )
-        else:
-            # ایجاد پروفایل کاربر جدید
-            user_info = None
-            try:
-                user_info = self.client.user_info_by_username(username)
-            except Exception as e:
-                self.logger.warning(
-                    f"Could not fetch user info for {username}: {e}")
+                )
+            else:
+                # ایجاد پروفایل کاربر جدید
+                user_info = None
+                try:
+                    user_info = self.client.user_info_by_username(username)
+                except Exception as e:
+                    self.logger.warning(
+                        f"Could not fetch user info for {username}: {e}")
 
-            user_profile = UserProfile(
-                user_id=user_id,
-                username=username,
-                full_name=user_info.full_name if user_info else None,
-                is_following=False,  # در بررسی دنبال‌کنندگان به‌روزرسانی می‌شود
-                is_follower=False,   # در بررسی دنبال‌کنندگان به‌روزرسانی می‌شود
-                interaction_count=1,
-                last_interaction=datetime.now(),
-                first_seen=datetime.now(),
-                metadata={
-                    "interaction_types": [interaction_type],
-                    "user_info": user_info.dict() if user_info else {}
-                }
-            )
+                user_profile = UserProfile(
+                    user_id=user_id,
+                    username=username,
+                    full_name=user_info.full_name if user_info else None,
+                    is_following=False,  # در بررسی دنبال‌کنندگان به‌روزرسانی می‌شود
+                    is_follower=False,   # در بررسی دنبال‌کنندگان به‌روزرسانی می‌شود
+                    interaction_count=1,
+                    last_interaction=datetime.now(),
+                    first_seen=datetime.now(),
+                    metadata={
+                        "interaction_types": [interaction_type],
+                        "user_info": user_info.dict() if user_info else {}
+                    }
+                )
 
-            self.db[get_collection_name("users")].insert_one(
-                user_profile.to_dict())
+                self.db[get_collection_name("users")].insert_one(
+                    user_profile.to_dict())
+        except Exception as e:
+            self.logger.error(f"خطا در به‌روزرسانی پروفایل کاربر: {e}")
 
     def check_and_update_followers(self):
         """بررسی دنبال‌کنندگان جدید و به‌روزرسانی دیتابیس"""
-        if (datetime.now() - self.last_check_follower_time).total_seconds() < 7200:  # 2 ساعت به جای 1 ساعت
-            # بررسی بیش از هر 2 ساعت انجام نمی‌شود
+        if (datetime.now() - self.last_check_follower_time).total_seconds() < 3600:  # کاهش به 1 ساعت
+            # بررسی بیش از هر 1 ساعت انجام نمی‌شود
             return True
 
         self.logger.info("بررسی دنبال‌کنندگان و دنبال‌شوندگان")
 
         try:
             # دریافت دنبال‌کنندگان و دنبال‌شوندگان فعلی
-            followers = set(self.client.user_followers(
-                self.client.user_id).keys())
-            following = set(self.client.user_following(
-                self.client.user_id).keys())
+            followers = self.client.user_followers(self.client.user_id)
+            following = self.client.user_following(self.client.user_id)
+
+            if not isinstance(followers, dict) or not isinstance(following, dict):
+                self.logger.warning(
+                    f"فرمت نامعتبر برای followers/following: followers {type(followers)}, following {type(following)}")
+                return True
+
+            followers_set = set(followers.keys())
+            following_set = set(following.keys())
 
             # به‌روزرسانی دیتابیس
-            for user_id in followers.union(following):
-                is_follower = user_id in followers
-                is_following = user_id in following
+            for user_id in followers_set.union(following_set):
+                is_follower = user_id in followers_set
+                is_following = user_id in following_set
 
                 # تلاش برای دریافت نام کاربری
                 username = None
@@ -189,7 +200,7 @@ class InstagramBot(SessionManager):
                                 user_id, username, self._update_user_profile)
 
                 # استراحت بین هر کاربر برای طبیعی بودن
-                human_sleep(2, 5)
+                human_sleep(1, 3)  # کاهش زمان استراحت بین کاربران
 
             self.last_check_follower_time = datetime.now()
             return True
@@ -197,7 +208,13 @@ class InstagramBot(SessionManager):
         except Exception as e:
             if "challenge_required" in str(e).lower():
                 self.logger.error(f"چالش امنیتی در هنگام بررسی دنبال‌کنندگان")
-                return False
+                # درصورت چالش امنیتی، تلاش مجدد برای لاگین
+                if not self.login():
+                    self.logger.error("لاگین مجدد ناموفق بود")
+                    return False
+                else:
+                    self.logger.info("لاگین مجدد موفقیت‌آمیز بود")
+                    return True
 
             self.logger.error(f"خطا در بررسی دنبال‌کنندگان: {e}")
             traceback.print_exc()
@@ -212,13 +229,20 @@ class InstagramBot(SessionManager):
         """مدیریت چالش‌های اینستاگرام"""
         self.logger.warning(f"⚠️ چالش اینستاگرام تشخیص داده شد: {e}")
 
+        # تلاش برای لاگین مجدد قبل از استراحت طولانی
+        if self.login():
+            self.logger.info("✅ لاگین مجدد موفقیت‌آمیز بود")
+            # استراحت کوتاه
+            human_sleep(60, 120)  # 1-2 دقیقه
+            return True
+
         # ریست کردن کلاینت
         self.logged_in = False
 
-        # استراحت طولانی
-        long_break = random.randint(10800, 21600)  # 3-6 ساعت
+        # استراحت متوسط (کوتاه‌تر از قبل)
+        medium_break = random.randint(600, 1200)  # 10-20 دقیقه
         self.logger.info(
-            f"⏸ استراحت طولانی برای حفظ امنیت اکانت: {long_break//3600} ساعت")
+            f"⏸ استراحت متوسط برای حفظ امنیت اکانت: {medium_break//60} دقیقه")
 
         # پایان دادن به سشن فعلی
         self.record_session_end()
@@ -253,7 +277,7 @@ class InstagramBot(SessionManager):
         self.record_session_start()
 
         # محدودیت اکشن در هر ساعت
-        hourly_action_limit = 5  # حداکثر 5 اکشن در ساعت
+        hourly_action_limit = 10  # افزایش از 5 به 10 اکشن در ساعت
         hourly_actions = 0
         last_hour_reset = datetime.now()
 
@@ -269,7 +293,7 @@ class InstagramBot(SessionManager):
                 # بررسی محدودیت ساعتی
                 if hourly_actions >= hourly_action_limit:
                     sleep_time = random.randint(
-                        600, 1200)  # استراحت 10-20 دقیقه
+                        300, 600)  # استراحت 5-10 دقیقه
                     self.logger.info(
                         f"⚠️ محدودیت اکشن ساعتی رسیده ({hourly_actions}/{hourly_action_limit})، استراحت به مدت {sleep_time} ثانیه")
                     human_sleep(sleep_time)
@@ -278,8 +302,8 @@ class InstagramBot(SessionManager):
                 # بررسی اگر به محدودیت تعامل روزانه رسیده‌ایم
                 if self.daily_interactions >= DAILY_INTERACTION_LIMIT:
                     self.logger.info(
-                        f"⚠️ محدودیت تعامل روزانه رسیده ({self.daily_interactions}/{DAILY_INTERACTION_LIMIT})، استراحت طولانی")
-                    human_sleep(1800, 3600)  # استراحت 30-60 دقیقه
+                        f"⚠️ محدودیت تعامل روزانه رسیده ({self.daily_interactions}/{DAILY_INTERACTION_LIMIT})، استراحت")
+                    human_sleep(600, 900)  # استراحت 10-15 دقیقه
                     continue
 
                 # بررسی و به‌روزرسانی دنبال‌کنندگان/دنبال‌شوندگان
@@ -288,9 +312,23 @@ class InstagramBot(SessionManager):
 
                 if not follower_check_result:
                     self.logger.warning(
-                        "مشکل در بررسی دنبال‌کنندگان، احتمال چالش امنیتی")
-                    if not self.login():  # تلاش مجدد برای لاگین
+                        "مشکل در بررسی دنبال‌کنندگان، تلاش مجدد")
+                    # تلاش مجدد برای لاگین با استراحت کوتاه
+                    human_sleep(60, 120)
+                    if not self.login():
+                        self.logger.error("لاگین مجدد ناموفق، پایان جلسه")
                         break
+                    self.logger.info("لاگین مجدد موفقیت‌آمیز، ادامه جلسه")
+                    # کوتاه‌تر کردن جلسه فعلی
+                    current_time = datetime.now()
+                    remaining_time = (self.session_end_time -
+                                      current_time).total_seconds()
+                    # نصف کردن زمان باقیمانده
+                    self.session_end_time = current_time + \
+                        timedelta(seconds=max(300, remaining_time/2))
+                    self.logger.info(
+                        f"زمان جلسه کوتاه شد، پایان جدید: {self.session_end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                    continue
 
                 # انتخاب تصادفی یک اکشن براساس اولویت‌ها و زمان روز
                 # وزن‌های بیشتر برای اکشن‌های کم خطرتر
@@ -332,11 +370,28 @@ class InstagramBot(SessionManager):
                     action_result = self.explorers.interact_with_followers(
                         count=random.randint(1, 2), update_user_profile_func=self._update_user_profile)
 
-                # اگر چالش امنیتی رخ داده، پایان سشن
+                # اگر چالش امنیتی رخ داده، تلاش مجدد برای لاگین
                 if action_result is False:
                     self.logger.warning(
-                        "چالش امنیتی تشخیص داده شد، پایان جلسه")
-                    break
+                        "نتیجه اکشن منفی بود، احتمال چالش امنیتی")
+                    # تلاش مجدد برای لاگین با استراحت کوتاه
+                    human_sleep(30, 60)
+                    if not self.login():
+                        self.logger.error("لاگین مجدد ناموفق، پایان جلسه")
+                        break
+                    else:
+                        self.logger.info(
+                            "لاگین مجدد موفقیت‌آمیز، ادامه با اکشن دیگر")
+                        # کوتاه‌تر کردن جلسه فعلی
+                        current_time = datetime.now()
+                        remaining_time = (
+                            self.session_end_time - current_time).total_seconds()
+                        # نصف کردن زمان باقیمانده
+                        self.session_end_time = current_time + \
+                            timedelta(seconds=max(300, remaining_time/2))
+                        self.logger.info(
+                            f"زمان جلسه کوتاه شد، پایان جدید: {self.session_end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                        continue
 
                 # افزایش شمارنده اکشن‌های ساعتی
                 hourly_actions += 1
@@ -345,7 +400,7 @@ class InstagramBot(SessionManager):
                 sleep_duration = get_random_interval()
                 self.logger.info(
                     f"⏱ استراحت به مدت {sleep_duration} ثانیه")
-                human_sleep(sleep_duration, sleep_duration + 60)
+                human_sleep(sleep_duration, sleep_duration + 30)
 
                 # ثبت آمار فعلی
                 self.logger.info(
@@ -354,7 +409,7 @@ class InstagramBot(SessionManager):
             except Exception as e:
                 self.logger.error(f"❌ خطا در حلقه بات: {e}")
                 traceback.print_exc()
-                human_sleep(300, 600)  # استراحت 5-10 دقیقه در صورت خطا
+                human_sleep(120, 180)  # استراحت 2-3 دقیقه در صورت خطا
 
         # پایان جلسه
         self.record_session_end()
@@ -388,21 +443,21 @@ class InstagramBot(SessionManager):
                             self.logger.error(f"❌ خطا در جلسه: {e}")
                             traceback.print_exc()
                             self.is_running = False
-                            # انتظار 5 دقیقه قبل از تلاش مجدد
-                            time.sleep(300)
+                            # کاهش زمان انتظار از 5 دقیقه به 2 دقیقه قبل از تلاش مجدد
+                            time.sleep(120)
 
                         # پس از پایان جلسه، استراحت قبل از جلسه بعدی
                         break_duration = get_random_break_duration()
                         self.logger.info(
                             f"⏸ استراحت به مدت {break_duration/60:.1f} دقیقه")
-                        human_sleep(break_duration, break_duration + 300)
+                        human_sleep(break_duration, break_duration + 120)
 
                     time.sleep(1)
 
                 except Exception as e:
                     self.logger.error(f"❌ خطا در ترد کارگر: {e}")
                     traceback.print_exc()
-                    time.sleep(60)
+                    time.sleep(30)  # کاهش از 60 به 30 ثانیه
 
         # شروع ترد کارگر
         worker_thread = threading.Thread(target=_worker)
