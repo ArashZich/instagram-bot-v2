@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:latest
+    container_name: mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    restart: always
+    networks:
+      - bot_network
+
+  instagram_bot:
+    build: .
+    container_name: instagram_bot
+    env_file:
+      - .env
+    volumes:
+      - ./app:/app/app
+      - ./logs:/app/logs
+      - ./data:/app/data
+    depends_on:
+      - mongodb
+    restart: always
+    networks:
+      - bot_network
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017
+
+  api:
+    build: .
+    container_name: instagram_bot_api
+    env_file:
+      - .env
+    environment:
+      - RUN_API=true
+      - MONGO_URI=mongodb://mongodb:27017
+    volumes:
+      - ./app:/app/app
+    command: uvicorn app.api.routes:app --host 0.0.0.0 --port ${API_PORT} --reload
+    ports:
+      - "${API_PORT}:${API_PORT}"
+    depends_on:
+      - mongodb
+    restart: always
+    networks:
+      - bot_network
+
+networks:
+  bot_network:
+    driver: bridge
+
+volumes:
+  mongodb_data:
