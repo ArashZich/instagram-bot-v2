@@ -52,14 +52,32 @@ class InstagramActions:
 
             # بررسی نام کالکشن صحیح
             collection_name = get_collection_name("interactions")
-            self.logger.info(f"ذخیره تعامل در کالکشن: {collection_name}")
 
-            # ثبت در دیتابیس
-            result = self.db[collection_name].insert_one(interaction_dict)
+            # اطمینان از اتصال به دیتابیس
+            if not self.db:
+                self.logger.error("❌ خطا: اتصال به دیتابیس برقرار نیست!")
+                from app.database.connection import get_database
+                self.db = get_database()
+                if not self.db:
+                    self.logger.error("❌ خطا: نمی‌توان به دیتابیس متصل شد!")
+                    return False
+
+            self.logger.info(f"ذخیره تعامل در کالکشن: {collection_name}")
+            self.logger.debug(f"داده تعامل: {interaction_dict}")
+
+            # ثبت در دیتابیس با مدیریت خطا
+            try:
+                result = self.db[collection_name].insert_one(interaction_dict)
+                self.logger.info(f"تعامل با ID: {result.inserted_id} ثبت شد.")
+            except Exception as insert_error:
+                self.logger.error(f"❌ خطا در درج تعامل: {insert_error}")
+                import traceback
+                self.logger.error(f"جزئیات خطا: {traceback.format_exc()}")
+                return False
 
             # لاگ کردن نتیجه با شناسه
             self.logger.info(
-                f"تعامل {interaction.interaction_type} با کاربر {interaction.username} ثبت شد. (ID: {result.inserted_id})")
+                f"تعامل {interaction.interaction_type} با کاربر {interaction.username} ثبت شد.")
 
             # اطمینان از وجود تابع بروزرسانی
             if update_user_profile_func is None:
@@ -74,6 +92,8 @@ class InstagramActions:
                     username=interaction.username,
                     interaction_type=interaction.interaction_type
                 )
+                self.logger.info(
+                    f"پروفایل کاربر {interaction.username} بروزرسانی شد.")
             except Exception as profile_error:
                 self.logger.error(
                     f"خطا در بروزرسانی پروفایل کاربر: {profile_error}")
@@ -95,7 +115,7 @@ class InstagramActions:
             return True
 
         except Exception as e:
-            self.logger.error(f"خطا در ثبت تعامل: {e}")
+            self.logger.error(f"❌ خطا در ثبت تعامل: {e}")
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             return False
 

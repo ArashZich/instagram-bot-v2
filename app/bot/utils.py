@@ -1,6 +1,7 @@
 import json
 import random
 import time
+import sys
 from datetime import datetime, timedelta
 import logging
 from pathlib import Path
@@ -16,14 +17,42 @@ from app.config import (
 # Setup logging
 
 
+# تنظیمات بهتر لاگینگ در app/bot/utils.py
 def setup_logger():
     """Configure the logger"""
+    log_format = "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}"
+    logger.remove()  # حذف تنظیمات پیش‌فرض
+
+    # افزودن خروجی کنسول
     logger.add(
-        "logs/instagram_bot_{time}.log",
-        rotation="10 MB",
-        level="INFO",
-        format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}"
+        sys.stderr,
+        format=log_format,
+        level="DEBUG",
+        colorize=True
     )
+
+    # افزودن لاگ فایل با چرخش
+    logger.add(
+        "logs/instagram_bot_{time:YYYY-MM-DD}.log",
+        rotation="00:00",  # چرخش روزانه در نیمه‌شب
+        retention="7 days",  # نگهداری 7 روز آخر
+        compression="zip",  # فشرده‌سازی فایل‌های قدیمی
+        format=log_format,
+        level="DEBUG",
+        encoding="utf-8"
+    )
+
+    # افزودن لاگ خطاها به صورت جداگانه
+    logger.add(
+        "logs/errors_{time:YYYY-MM-DD}.log",
+        rotation="00:00",
+        retention="30 days",
+        compression="zip",
+        format=log_format,
+        level="ERROR",
+        encoding="utf-8"
+    )
+
     return logger
 
 # Load templates
