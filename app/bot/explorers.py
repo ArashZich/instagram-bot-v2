@@ -101,6 +101,20 @@ class InstagramExplorers:
 
             # بررسی و تبدیل feed_items به یک لیست اگر نیست
             media_items = []
+
+            # اضافه کردن بررسی اولیه برای جلوگیری از خطا
+            if callable(feed_items) and not isinstance(feed_items, (list, dict)):
+                self.logger.warning(
+                    f"feed_items یک تابع است! در حال فراخوانی...")
+                try:
+                    feed_items = feed_items()
+                    self.logger.debug(
+                        f"نتیجه فراخوانی feed_items: {type(feed_items)}")
+                except Exception as e:
+                    self.logger.error(f"خطا در فراخوانی feed_items: {e}")
+                    feed_items = []
+
+            # اکنون با feed_items به عنوان غیر-callable کار می‌کنیم
             if hasattr(feed_items, 'items'):
                 # اگر feed_items یک شی با ویژگی items است
                 media_items = feed_items.items
@@ -119,18 +133,14 @@ class InstagramExplorers:
             else:
                 self.logger.warning(
                     f"ساختار نامشخص برای feed_items: {type(feed_items)}")
-                # اگر feed_items یک callable است (مانند یک متد)، آن را فراخوانی کنید
-                if callable(feed_items):
-                    try:
-                        media_items = feed_items()
-                        self.logger.debug(
-                            f"Called feed_items as function: {type(media_items)}")
-                    except Exception as e:
-                        self.logger.error(
-                            f"Error calling feed_items as function: {e}")
                 # در صورت ساختار نامشخص، از یک لیست خالی استفاده می‌کنیم
-                if not isinstance(media_items, list):
-                    media_items = []
+                media_items = []
+
+            # اطمینان از اینکه media_items یک لیست است
+            if not isinstance(media_items, list):
+                self.logger.warning(
+                    f"media_items یک لیست نیست، تبدیل به لیست خالی: {type(media_items)}")
+                media_items = []
 
             self.logger.info(
                 f"تعداد {len(media_items)} آیتم در تایم‌لاین یافت شد")
@@ -204,9 +214,10 @@ class InstagramExplorers:
                             f"خطا در تعامل با رسانه تایم‌لاین: {e}")
                         import traceback
                         self.logger.error(traceback.format_exc())
-                else:
-                    self.logger.warning("هیچ پستی در تایم‌لاین یافت نشد")
 
+                return True
+            else:
+                self.logger.warning("هیچ پستی در تایم‌لاین یافت نشد")
                 return True
 
         except Exception as e:

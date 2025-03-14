@@ -37,6 +37,10 @@ class InstagramActions:
                 for k, v in d.items():
                     if isinstance(v, dict):
                         result[k] = sanitize_dict(v)
+                    elif isinstance(v, list):
+                        # پردازش لیست‌ها
+                        result[k] = [sanitize_dict(item) if isinstance(item, dict) else str(
+                            item) if hasattr(item, '__dict__') else item for item in v]
                     else:
                         result[k] = str(v) if hasattr(v, '__dict__') else v
                 return result
@@ -46,20 +50,47 @@ class InstagramActions:
             # اضافه کردن اطلاعات تکمیلی
             interaction_dict["session_id"] = self.session_id
 
+            # بررسی نام کالکشن صحیح
+            collection_name = get_collection_name("interactions")
+            self.logger.info(f"ذخیره تعامل در کالکشن: {collection_name}")
+
             # ثبت در دیتابیس
-            result = self.db[get_collection_name(
-                "interactions")].insert_one(interaction_dict)
+            result = self.db[collection_name].insert_one(interaction_dict)
 
             # لاگ کردن نتیجه با شناسه
             self.logger.info(
                 f"تعامل {interaction.interaction_type} با کاربر {interaction.username} ثبت شد. (ID: {result.inserted_id})")
 
+            # اطمینان از وجود تابع بروزرسانی
+            if update_user_profile_func is None:
+                self.logger.warning(
+                    "تابع بروزرسانی پروفایل کاربر مشخص نشده است!")
+                return True
+
             # بروزرسانی پروفایل کاربر
-            update_user_profile_func(
-                user_id=interaction.user_id,
-                username=interaction.username,
-                interaction_type=interaction.interaction_type
-            )
+            try:
+                update_user_profile_func(
+                    user_id=interaction.user_id,
+                    username=interaction.username,
+                    interaction_type=interaction.interaction_type
+                )
+            except Exception as profile_error:
+                self.logger.error(
+                    f"خطا در بروزرسانی پروفایل کاربر: {profile_error}")
+                self.logger.error(f"Traceback: {traceback.format_exc()}")
+                # ادامه اجرا حتی در صورت خطا در بروزرسانی پروفایل
+
+            # بررسی ذخیره موفق با بازیابی داده
+            try:
+                saved_interaction = self.db[collection_name].find_one(
+                    {"_id": result.inserted_id})
+                if saved_interaction:
+                    self.logger.info(
+                        f"تعامل با موفقیت ذخیره و بازیابی شد: {saved_interaction.get('interaction_type')}")
+                else:
+                    self.logger.warning(f"تعامل ذخیره شد اما بازیابی نشد!")
+            except Exception as verify_error:
+                self.logger.error(f"خطا در تأیید ذخیره تعامل: {verify_error}")
 
             return True
 
