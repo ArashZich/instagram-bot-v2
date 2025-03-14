@@ -1,6 +1,7 @@
 import random
 from typing import List, Optional
 from datetime import datetime
+import json
 from loguru import logger
 
 from app.bot.utils import human_sleep, is_persian_content, setup_logger
@@ -234,6 +235,8 @@ class InstagramExplorers:
                 selected_users = selected_users[:min(5, len(selected_users))]
 
                 user_count = 0
+                error_count = 0  # شمارنده خطا برای محدود کردن تلاش‌های ناموفق
+
                 for user_id in selected_users:
                     try:
                         # دریافت اطلاعات کاربر
@@ -255,31 +258,85 @@ class InstagramExplorers:
                                 story = random.choice(stories)
 
                                 # واکنش به استوری
-                                self.actions.react_to_story(
+                                reaction_result = self.actions.react_to_story(
                                     story.id, username, user_id, update_user_profile_func)
 
-                                # افزایش شمارنده
-                                user_count += 1
+                                if reaction_result:
+                                    # افزایش شمارنده
+                                    user_count += 1
+                                    self.logger.info(
+                                        f"✅ واکنش به استوری {username} موفقیت‌آمیز بود")
+                                else:
+                                    self.logger.warning(
+                                        f"⚠️ واکنش به استوری {username} ناموفق بود")
+                                    error_count += 1
+
                                 if user_count >= count:
+                                    self.logger.info(
+                                        f"به تعداد کافی ({count}) استوری واکنش نشان داده شد")
                                     return True
 
                         # استراحت بین هر کاربر
                         human_sleep(15, 30)  # کاهش زمان استراحت
 
+                        # اگر تعداد خطاها از حد مشخصی بیشتر شد، از حلقه خارج شو
+                        if error_count >= 3:
+                            self.logger.warning(
+                                "تعداد خطاها بیش از حد مجاز است، خروج از حلقه")
+                            return False
+
+                    except json.JSONDecodeError as je:
+                        self.logger.warning(
+                            f"❌ خطای JSONDecodeError در بررسی استوری‌های کاربر {user_id}: {je}")
+                        error_count += 1
+
+                        # اگر تعداد خطاهای JSON بیش از حد است، خارج شو
+                        if error_count >= 3:
+                            self.logger.error(
+                                "تعداد خطاهای JSON بیش از حد مجاز است، خروج از تابع")
+                            return False
+
+                        # استراحت طولانی‌تر در صورت خطای JSON
+                        human_sleep(20, 40)
+                        continue
+
                     except Exception as e:
                         self.logger.error(
                             f"خطا در بررسی استوری‌های کاربر {user_id}: {e}")
+                        error_count += 1
+
+                        # اگر خطای چالش امنیتی رخ داده، زودتر خارج شو
+                        if "challenge_required" in str(e).lower():
+                            self.logger.error(
+                                "چالش امنیتی تشخیص داده شد، خروج از تابع")
+                            return False
+
+                        # اگر تعداد خطاها بیش از حد است، خارج شو
+                        if error_count >= 3:
+                            self.logger.error(
+                                "تعداد خطاها بیش از حد مجاز است، خروج از تابع")
+                            return False
+
+                # اگر به هر دلیلی از حلقه خارج شدیم ولی تعداد کافی تعامل نداشتیم
+                self.logger.info(
+                    f"پایان بررسی استوری‌ها. تعداد واکنش‌ها: {user_count}")
+                return user_count > 0  # اگر حداقل یک واکنش داشتیم، موفق محسوب می‌شود
+
             else:
                 self.logger.warning(
                     f"لیست following نامعتبر است: {type(following)}")
+                return False
 
-            return True
-
+        except json.JSONDecodeError as je:
+            self.logger.error(f"❌ خطای JSONDecodeError در سطح اصلی تابع: {je}")
+            return False
         except Exception as e:
             if "challenge_required" in str(e).lower():
                 self.logger.error("❌ چالش امنیتی در هنگام بررسی استوری‌ها")
                 return False
             self.logger.error(f"خطا در بررسی استوری‌ها: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
             return False
 
     def interact_with_followers(self, count: int = 2, update_user_profile_func=None):
