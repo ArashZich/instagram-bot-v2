@@ -41,13 +41,21 @@ class InteractionCreate(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 
-class InteractionResponse(InteractionCreate):
+class InteractionResponse(BaseModel):
     id: str
+    user_id: str
+    username: str
+    interaction_type: str  # تغییر از InteractionType به str برای انعطاف‌پذیری بیشتر
     timestamp: datetime
-    status: str
+    content: Optional[str] = None
+    media_id: Optional[str] = None
+    status: str = "success"
+    metadata: Optional[Dict[str, Any]] = None
 
     class Config:
         orm_mode = True
+        # تنظیم امکان مقادیر اضافی
+        extra = "ignore"
 
 # User profile models
 

@@ -46,14 +46,36 @@ app.add_middleware(
 
 def convert_objectid(item):
     """Convert MongoDB ObjectId to string in document"""
-    if item.get("_id"):
-        item["id"] = str(item.pop("_id"))
+    result = {}
 
-    # Convert any datetime objects to ISO format strings
-    for key, value in item.items():
-        if isinstance(value, datetime):
-            item[key] = value.isoformat()
-    return item
+    try:
+        for key, value in item.items():
+            # تبدیل _id به id
+            if key == "_id":
+                result["id"] = str(value)
+                continue
+
+            # تبدیل تاریخ‌ها به رشته
+            if isinstance(value, datetime):
+                result[key] = value.isoformat()
+            # تبدیل اشیاء تودرتو
+            elif isinstance(value, dict):
+                result[key] = convert_objectid(value)
+            # تبدیل لیست‌ها
+            elif isinstance(value, list):
+                result[key] = [convert_objectid(i) if isinstance(
+                    i, dict) else i for i in value]
+            # سایر موارد
+            else:
+                result[key] = value
+    except Exception as e:
+        print(f"Error in convert_objectid: {e}")
+        # بازگشت آیتم اصلی در صورت خطا
+        if isinstance(item, dict) and "_id" in item:
+            item["id"] = str(item.pop("_id"))
+        return item
+
+    return result
 
 # Database dependency
 
@@ -83,38 +105,78 @@ async def get_interactions(
     db=Depends(get_db)
 ):
     """Get interactions with optional filtering"""
-    query = {}
+    try:
+        # ایجاد کوئری برای فیلتر کردن نتایج
+        query = {}
 
-    if interaction_type:
-        query["interaction_type"] = interaction_type
+        if interaction_type:
+            query["interaction_type"] = interaction_type
 
-    if username:
-        query["username"] = username
+        if username:
+            query["username"] = username
 
-    if user_id:
-        query["user_id"] = user_id
+        if user_id:
+            query["user_id"] = user_id
 
-    if start_date or end_date:
-        date_query = {}
-        if start_date:
-            date_query["$gte"] = datetime.fromisoformat(start_date)
-        if end_date:
-            date_query["$lte"] = datetime.fromisoformat(end_date)
-        query["timestamp"] = date_query
+        if start_date or end_date:
+            date_query = {}
+            if start_date:
+                date_query["$gte"] = datetime.fromisoformat(start_date)
+            if end_date:
+                date_query["$lte"] = datetime.fromisoformat(end_date)
+            query["timestamp"] = date_query
 
-    collection_name = get_collection_name("interactions")
-    print(f"Using collection: {collection_name}")
-    print(f"Query: {query}")
+        # دریافت نام کالکشن صحیح
+        collection_name = get_collection_name("interactions")
+        print(f"Querying collection: {collection_name}")
 
-    cursor = db[collection_name].find(
-        query).sort("timestamp", -1).skip(skip).limit(limit)
+        # بررسی وجود کالکشن
+        collections = await db.list_collection_names()
+        if collection_name not in collections:
+            print(
+                f"Collection {collection_name} not found! Available collections: {collections}")
+            return []
 
-    interactions = []
-    async for doc in cursor:
-        print(f"Found document: {doc}")
-        interactions.append(convert_objectid(doc))
+        # لاگ کوئری
+        print(f"Query: {query}")
 
-    return interactions
+        # جستجو در دیتابیس
+        cursor = db[collection_name].find(
+            query).sort("timestamp", -1).skip(skip).limit(limit)
+
+        interactions = []
+        async for doc in cursor:
+            try:
+                # لاگ داک‌ها برای دیباگ
+                print(f"Found document: {doc}")
+
+                # تنظیم ساختار داده‌ها برای انطباق با مدل پاسخ
+                # برخی فیلدها ممکن است نیاز به پردازش داشته باشند
+                # به عنوان مثال تبدیل InteractionType.STORY_REACTION به STORY_REACTION
+                if "interaction_type" in doc and isinstance(doc["interaction_type"], str):
+                    # حذف پیشوند InteractionType. اگر وجود داشته باشد
+                    if doc["interaction_type"].startswith("InteractionType."):
+                        doc["interaction_type"] = doc["interaction_type"].replace(
+                            "InteractionType.", "")
+
+                # اطمینان از وجود تمام فیلدهای مورد نیاز
+                if "status" not in doc:
+                    doc["status"] = "success"
+
+                # تبدیل objectid و افزودن به لیست
+                processed_doc = convert_objectid(doc)
+                interactions.append(processed_doc)
+            except Exception as doc_error:
+                print(f"Error processing document: {doc_error}")
+                # ادامه با سند بعدی
+
+        return interactions
+    except Exception as e:
+        print(f"Error in get_interactions: {e}")
+        import traceback
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 
 @app.get("/interactions/{interaction_id}", response_model=InteractionResponse, tags=["Interactions"])
