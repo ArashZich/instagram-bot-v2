@@ -22,7 +22,11 @@ from app.api.schemas import (
     TimeSeriesPoint,
     TimeRange,
     StatsQueryParams,
-    UserQueryParams
+    UserQueryParams,
+    InteractionStat,
+    DailyActivityStat,
+    PeriodSummary,
+    PerformanceResponse
 )
 
 # Create FastAPI app
@@ -365,7 +369,8 @@ async def get_stats(
         # Convert from milliseconds
         total_seconds = runtime_result[0]["total_duration"] / 1000
         hours = int(total_seconds / 3600)
-        total_runtime = f"{hours} hours"
+        minutes = int((total_seconds % 3600) / 60)
+        total_runtime = f"{hours} hours {minutes} minutes"
 
     # Combine stats
     return StatsResponse(
@@ -388,6 +393,345 @@ async def get_stats(
             is_active=active_session is not None
         )
     )
+
+
+# اضافه کردن به انتهای فایل app/api/routes.py
+
+@app.get("/performance/stats", response_model=PerformanceResponse, tags=["Performance"])
+async def get_performance_stats(
+    time_range: TimeRange = TimeRange.WEEKLY,
+    db=Depends(get_async_database)
+):
+    """
+    دریافت آمار عملکرد بات در بازه زمانی مشخص
+    """
+    try:
+        # محاسبه تاریخ شروع و پایان براساس بازه زمانی
+        end_date = datetime.now()
+
+        if time_range == TimeRange.DAILY:
+            start_date = end_date - timedelta(days=1)
+        elif time_range == TimeRange.WEEKLY:
+            start_date = end_date - timedelta(weeks=1)
+        elif time_range == TimeRange.MONTHLY:
+            start_date = end_date - timedelta(days=30)
+        elif time_range == TimeRange.SIX_MONTHS:
+            start_date = end_date - timedelta(days=180)
+        elif time_range == TimeRange.YEARLY:
+            start_date = end_date - timedelta(days=365)
+        else:
+            start_date = end_date - timedelta(weeks=1)  # پیش‌فرض: هفتگی
+
+        # دریافت آمار تعامل به تفکیک نوع
+        interaction_pipeline = [
+            {"$match": {"timestamp": {"$gte": start_date, "$lte": end_date}}},
+            {"$group": {"_id": "$interaction_type", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}}
+        ]
+
+        interaction_cursor = db[get_collection_name(
+            "interactions")].aggregate(interaction_pipeline)
+
+        interaction_stats = []
+        total_interactions = 0
+
+        async for doc in interaction_cursor:
+            count = doc["count"]
+            interaction_type = doc["_id"]
+            # حذف پیشوند InteractionType. اگر وجود داشته باشد
+            if isinstance(interaction_type, str) and interaction_type.startswith("InteractionType."):
+                interaction_type = interaction_type.replace(
+                    "InteractionType.", "")
+
+            interaction_stats.append(InteractionStat(
+                interaction_type=interaction_type,
+                count=count
+            ))
+            total_interactions += count
+
+        # محاسبه نرخ موفقیت (تعامل‌های موفق به کل تعامل‌ها)
+        success_pipeline = [
+            {"$match": {"timestamp": {"$gte": start_date, "$lte": end_date}}},
+            {"$group": {
+                "_id": "$status",
+                "count": {"$sum": 1}
+            }}
+        ]
+
+        success_cursor = db[get_collection_name(
+            "interactions")].aggregate(success_pipeline)
+        total_count = 0
+        success_count = 0
+
+        async for doc in success_cursor:
+            if doc["_id"] == "success":
+                success_count = doc["count"]
+            total_count += doc["count"]
+
+        success_rate = (success_count / total_count *
+                        100) if total_count > 0 else 0
+
+        # توزیع ساعتی تعامل‌ها
+        hourly_pipeline = [
+            {"$match": {"timestamp": {"$gte": start_date, "$lte": end_date}}},
+            {"$group": {
+                "_id": {"$hour": "$timestamp"},
+                "count": {"$sum": 1}
+            }},
+            {"$sort": {"_id": 1}}
+        ]
+
+        hourly_cursor = db[get_collection_name(
+            "interactions")].aggregate(hourly_pipeline)
+        hourly_distribution = {}
+
+        async for doc in hourly_cursor:
+            hour = str(doc["_id"]).zfill(2)
+            hourly_distribution[hour] = doc["count"]
+
+        # آمار روزانه
+        daily_pipeline = [
+            {"$match": {"timestamp": {"$gte": start_date, "$lte": end_date}}},
+            {"$group": {
+                "_id": {
+                    "date": {"$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp"}},
+                    "type": "$interaction_type"
+                },
+                "count": {"$sum": 1}
+            }},
+            {"$sort": {"_id.date": 1}}
+        ]
+
+        daily_cursor = db[get_collection_name(
+            "interactions")].aggregate(daily_pipeline)
+
+        # ساختار برای نگهداری آمار روزانه
+        daily_stats = {}
+
+        async for doc in daily_cursor:
+            date = doc["_id"]["date"]
+            interaction_type = doc["_id"]["type"]
+            count = doc["count"]
+
+            # اطمینان از وجود تاریخ در دیکشنری
+            if date not in daily_stats:
+                daily_stats[date] = {
+                    "total": 0,
+                    "comments": 0,
+                    "likes": 0,
+                    "follows": 0,
+                    "unfollows": 0,
+                    "story_reactions": 0,
+                    "direct_messages": 0
+                }
+
+            # افزودن به شمارنده مناسب
+            daily_stats[date]["total"] += count
+
+            # تطبیق نوع تعامل با فیلد مناسب
+            if "COMMENT" in interaction_type:
+                daily_stats[date]["comments"] += count
+            elif "LIKE" in interaction_type:
+                daily_stats[date]["likes"] += count
+            elif "FOLLOW" in interaction_type and not "UNFOLLOW" in interaction_type:
+                daily_stats[date]["follows"] += count
+            elif "UNFOLLOW" in interaction_type:
+                daily_stats[date]["unfollows"] += count
+            elif "STORY" in interaction_type:
+                daily_stats[date]["story_reactions"] += count
+            elif "DIRECT" in interaction_type or "MESSAGE" in interaction_type:
+                daily_stats[date]["direct_messages"] += count
+
+        # تبدیل به لیست DailyActivityStat
+        daily_activity = []
+        for date, stats in daily_stats.items():
+            daily_activity.append(DailyActivityStat(
+                date=date,
+                total=stats["total"],
+                comments=stats["comments"],
+                likes=stats["likes"],
+                follows=stats["follows"],
+                unfollows=stats["unfollows"],
+                story_reactions=stats["story_reactions"],
+                direct_messages=stats["direct_messages"]
+            ))
+
+        # مرتب‌سازی براساس تاریخ
+        daily_activity.sort(key=lambda x: x.date)
+
+        # یافتن روز با بیشترین و کمترین فعالیت
+        most_active_day = None
+        least_active_day = None
+        max_count = 0
+        min_count = float('inf')
+
+        for day in daily_activity:
+            if day.total > max_count:
+                max_count = day.total
+                most_active_day = day.date
+
+            if day.total < min_count and day.total > 0:
+                min_count = day.total
+                least_active_day = day.date
+
+        # محاسبه میانگین روزانه
+        days_count = len(daily_activity) if daily_activity else 1
+        daily_average = total_interactions / days_count
+
+        # ایجاد خلاصه دوره
+        summary = PeriodSummary(
+            start_date=start_date.strftime("%Y-%m-%d"),
+            end_date=end_date.strftime("%Y-%m-%d"),
+            total_interactions=total_interactions,
+            interactions_by_type=interaction_stats,
+            hourly_distribution=hourly_distribution,
+            most_active_day=most_active_day,
+            least_active_day=least_active_day,
+            daily_average=round(daily_average, 2),
+            success_rate=round(success_rate, 2)
+        )
+
+        # پاسخ نهایی
+        return PerformanceResponse(
+            summary=summary,
+            daily_activity=daily_activity
+        )
+
+    except Exception as e:
+        import traceback
+        error_detail = f"Error: {str(e)}\n{traceback.format_exc()}"
+        raise HTTPException(status_code=500, detail=error_detail)
+
+
+@app.get("/performance/runtime", response_model=Dict[str, Any], tags=["Performance"])
+async def get_bot_runtime(
+    time_range: TimeRange = TimeRange.WEEKLY,
+    db=Depends(get_async_database)
+):
+    """
+    دریافت آمار زمان اجرای بات در بازه زمانی مشخص
+    """
+    try:
+        # محاسبه تاریخ شروع و پایان براساس بازه زمانی
+        end_date = datetime.now()
+
+        if time_range == TimeRange.DAILY:
+            start_date = end_date - timedelta(days=1)
+        elif time_range == TimeRange.WEEKLY:
+            start_date = end_date - timedelta(weeks=1)
+        elif time_range == TimeRange.MONTHLY:
+            start_date = end_date - timedelta(days=30)
+        elif time_range == TimeRange.SIX_MONTHS:
+            start_date = end_date - timedelta(days=180)
+        elif time_range == TimeRange.YEARLY:
+            start_date = end_date - timedelta(days=365)
+        else:
+            start_date = end_date - timedelta(weeks=1)  # پیش‌فرض: هفتگی
+
+        # محاسبه زمان کل اجرا برای جلسات با پایان مشخص
+        runtime_pipeline = [
+            {"$match": {
+                "started_at": {"$gte": start_date, "$lte": end_date},
+                "ended_at": {"$exists": True, "$ne": None}
+            }},
+            {"$project": {
+                "duration_ms": {"$subtract": ["$ended_at", "$started_at"]}
+            }},
+            {"$group": {"_id": None, "total_duration_ms": {"$sum": "$duration_ms"}}}
+        ]
+
+        runtime_result = await db[get_collection_name("sessions")].aggregate(runtime_pipeline).to_list(1)
+
+        # محاسبه زمان برای جلسات فعال (بدون پایان)
+        active_pipeline = [
+            {"$match": {
+                "started_at": {"$gte": start_date, "$lte": end_date},
+                "$or": [
+                    {"ended_at": {"$exists": False}},
+                    {"ended_at": None}
+                ],
+                "is_active": True
+            }},
+            {"$project": {
+                "duration_ms": {"$subtract": [end_date, "$started_at"]}
+            }},
+            {"$group": {"_id": None, "total_duration_ms": {"$sum": "$duration_ms"}}}
+        ]
+
+        active_result = await db[get_collection_name("sessions")].aggregate(active_pipeline).to_list(1)
+
+        # محاسبه مجموع زمان اجرا
+        completed_duration_ms = runtime_result[0]["total_duration_ms"] if runtime_result else 0
+        active_duration_ms = active_result[0]["total_duration_ms"] if active_result else 0
+        total_duration_ms = completed_duration_ms + active_duration_ms
+
+        # تبدیل به ساعت
+        total_seconds = total_duration_ms / 1000
+        total_minutes = total_seconds / 60
+        total_hours = total_minutes / 60
+
+        # شمارش جلسات
+        session_count = await db[get_collection_name("sessions")].count_documents({
+            "started_at": {"$gte": start_date, "$lte": end_date}
+        })
+
+        # جلسه فعال فعلی
+        active_session = await db[get_collection_name("sessions")].find_one(
+            {"is_active": True},
+            sort=[("started_at", -1)]
+        )
+
+        # آمار روزانه زمان اجرا
+        daily_runtime_pipeline = [
+            {"$match": {
+                "started_at": {"$gte": start_date, "$lte": end_date},
+                "ended_at": {"$exists": True, "$ne": None}
+            }},
+            {"$project": {
+                "date": {"$dateToString": {"format": "%Y-%m-%d", "date": "$started_at"}},
+                "duration_ms": {"$subtract": ["$ended_at", "$started_at"]}
+            }},
+            {"$group": {
+                "_id": "$date",
+                "total_duration_ms": {"$sum": "$duration_ms"}
+            }},
+            {"$sort": {"_id": 1}}
+        ]
+
+        daily_runtime_cursor = db[get_collection_name(
+            "sessions")].aggregate(daily_runtime_pipeline)
+
+        daily_runtime = []
+        async for doc in daily_runtime_cursor:
+            hours = doc["total_duration_ms"] / (1000 * 60 * 60)
+            daily_runtime.append({
+                "date": doc["_id"],
+                "hours": round(hours, 2),
+                "minutes": round(hours * 60, 2)
+            })
+
+        return {
+            "total_runtime": {
+                "hours": round(total_hours, 2),
+                "minutes": round(total_minutes, 2),
+                "seconds": round(total_seconds, 2)
+            },
+            "session_count": session_count,
+            "last_active_session": active_session["started_at"] if active_session else None,
+            "is_currently_active": active_session is not None,
+            "daily_runtime": daily_runtime,
+            "period": {
+                "start_date": start_date.strftime("%Y-%m-%d"),
+                "end_date": end_date.strftime("%Y-%m-%d"),
+                "range": time_range
+            }
+        }
+
+    except Exception as e:
+        import traceback
+        error_detail = f"Error: {str(e)}\n{traceback.format_exc()}"
+        raise HTTPException(status_code=500, detail=error_detail)
+
 
 # Bot control endpoints
 

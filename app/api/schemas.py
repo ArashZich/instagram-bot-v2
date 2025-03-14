@@ -123,3 +123,42 @@ class UserQueryParams(BaseModel):
     is_following: Optional[bool] = None
     limit: int = 20
     skip: int = 0
+
+
+# اضافه کردن به انتهای فایل app/api/schemas.py
+
+class InteractionStat(BaseModel):
+    """آمار تعامل به تفکیک نوع"""
+    interaction_type: str
+    count: int
+
+
+class DailyActivityStat(BaseModel):
+    """آمار فعالیت روزانه"""
+    date: str
+    total: int
+    comments: int
+    likes: int
+    follows: int
+    unfollows: int
+    story_reactions: int
+    direct_messages: int
+
+
+class PeriodSummary(BaseModel):
+    """خلاصه عملکرد در یک دوره زمانی"""
+    start_date: str
+    end_date: str
+    total_interactions: int
+    interactions_by_type: List[InteractionStat]
+    hourly_distribution: Dict[str, int]
+    most_active_day: Optional[str] = None
+    least_active_day: Optional[str] = None
+    daily_average: float
+    success_rate: float
+
+
+class PerformanceResponse(BaseModel):
+    """پاسخ نهایی API"""
+    summary: PeriodSummary
+    daily_activity: List[DailyActivityStat]
