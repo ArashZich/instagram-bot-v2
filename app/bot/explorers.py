@@ -191,7 +191,6 @@ class InstagramExplorers:
                     self.logger.info(
                         "تلاش برای دریافت پست‌های هشتگ با روش سوم")
                     from app.config import PERSIAN_HASHTAGS
-                    import random
 
                     # انتخاب یک هشتگ تصادفی
                     hashtag = random.choice(PERSIAN_HASHTAGS)
