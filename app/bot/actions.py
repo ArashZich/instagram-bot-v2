@@ -2,6 +2,8 @@ import random
 from typing import List, Optional
 from datetime import datetime
 from loguru import logger
+import traceback
+
 
 from app.database.models import UserInteraction, InteractionType
 from app.bot.utils import human_sleep, should_perform_action, humanize_text, setup_logger
@@ -23,6 +25,18 @@ class InstagramActions:
         try:
             # تبدیل به دیکشنری برای ذخیره
             interaction_dict = interaction.to_dict()
+
+            # Sanitize any complex objects
+            def sanitize_dict(d):
+                result = {}
+                for k, v in d.items():
+                    if isinstance(v, dict):
+                        result[k] = sanitize_dict(v)
+                    else:
+                        result[k] = str(v) if hasattr(v, '__dict__') else v
+                return result
+
+            interaction_dict = sanitize_dict(interaction_dict)
 
             # اضافه کردن اطلاعات تکمیلی
             interaction_dict["session_id"] = self.session_id
@@ -46,6 +60,7 @@ class InstagramActions:
 
         except Exception as e:
             self.logger.error(f"خطا در ثبت تعامل: {e}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
             return False
 
     def follow_user(self, user_id: str, username: str, update_user_profile_func):

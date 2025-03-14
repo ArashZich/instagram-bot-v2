@@ -48,6 +48,11 @@ def convert_objectid(item):
     """Convert MongoDB ObjectId to string in document"""
     if item.get("_id"):
         item["id"] = str(item.pop("_id"))
+
+    # Convert any datetime objects to ISO format strings
+    for key, value in item.items():
+        if isinstance(value, datetime):
+            item[key] = value.isoformat()
     return item
 
 # Database dependency

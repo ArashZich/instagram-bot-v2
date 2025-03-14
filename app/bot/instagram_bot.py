@@ -34,7 +34,7 @@ class InstagramBot(SessionManager):
 
         # ایجاد کلاس‌های کمکی
         self.actions = InstagramActions(self.client, self.db, self.session_id)
-        self.explorers = InstagramExplorers(self.client, self.actions)
+        self.explorers = InstagramExplorers(self.client, self.actions, self.db)
         # اضافه کردن ارجاع به دیتابیس برای explorer
         self.explorers.db = self.db
 
@@ -60,6 +60,21 @@ class InstagramBot(SessionManager):
         """به‌روزرسانی یا ایجاد پروفایل کاربر در دیتابیس"""
         try:
             # دریافت پروفایل کاربر موجود
+            # Sanitize inputs to ensure MongoDB compatibility
+            def sanitize_dict(obj):
+                if isinstance(obj, dict):
+                    return {key: sanitize_dict(value) for key, value in obj.items() if key != "_id"}
+                elif isinstance(obj, list):
+                    return [sanitize_dict(item) for item in list(obj)]
+                elif hasattr(obj, "dict") and callable(getattr(obj, "dict")):
+                    # Handle Pydantic models or similar objects
+                    return sanitize_dict(obj.dict())
+                elif hasattr(obj, "to_dict") and callable(getattr(obj, "to_dict")):
+                    # Handle custom to_dict methods
+                    return sanitize_dict(obj.to_dict())
+                else:
+                    return obj
+
             user_data = self.db[get_collection_name("users")].find_one({
                 "user_id": user_id})
 
@@ -69,7 +84,7 @@ class InstagramBot(SessionManager):
                     {"user_id": user_id},
                     {
                         "$set": {
-                            "last_interaction": datetime.now(),
+                            "last_interaction": datetime.now()
                         },
                         "$inc": {
                             "interaction_count": 1
@@ -80,32 +95,54 @@ class InstagramBot(SessionManager):
                     }
                 )
             else:
-                # ایجاد پروفایل کاربر جدید
+                # Get user info safely
                 user_info = None
                 try:
                     user_info = self.client.user_info_by_username(username)
+                    self.logger.debug(
+                        f"Retrieved user info for {username}: {type(user_info)}")
                 except Exception as e:
                     self.logger.warning(
                         f"Could not fetch user info for {username}: {e}")
 
+                # Prepare user profile with sanitized data
+                user_info_dict = {}
+                if user_info:
+                    try:
+                        # Convert Pydantic model to dict and sanitize nested objects
+                        if hasattr(user_info, "dict") and callable(getattr(user_info, "dict")):
+                            user_info_dict = sanitize_dict(user_info.dict())
+                        else:
+                            self.logger.warning(
+                                f"User info object doesn't have dict method: {type(user_info)}")
+                    except Exception as e:
+                        self.logger.error(
+                            f"Error converting user_info to dict: {e}")
+
                 user_profile = UserProfile(
                     user_id=user_id,
                     username=username,
-                    full_name=user_info.full_name if user_info else None,
-                    is_following=False,  # در بررسی دنبال‌کنندگان به‌روزرسانی می‌شود
-                    is_follower=False,   # در بررسی دنبال‌کنندگان به‌روزرسانی می‌شود
+                    full_name=user_info.full_name if user_info and hasattr(
+                        user_info, "full_name") else None,
+                    is_following=False,
+                    is_follower=False,
                     interaction_count=1,
                     last_interaction=datetime.now(),
                     first_seen=datetime.now(),
                     metadata={
                         "interaction_types": [interaction_type],
-                        "user_info": user_info.dict() if user_info else {}
+                        "user_info": user_info_dict
                     }
                 )
 
                 self.db[get_collection_name("users")].insert_one(
-                    user_profile.to_dict())
+                    sanitize_dict(user_profile.to_dict()))
+                self.logger.info(f"Created new user profile for {username}")
+
         except Exception as e:
+            import traceback
+            self.logger.error(
+                f"خطا در به‌روزرسانی پروفایل کاربر (traceback): {traceback.format_exc()}")
             self.logger.error(f"خطا در به‌روزرسانی پروفایل کاربر: {e}")
 
     def check_and_update_followers(self):

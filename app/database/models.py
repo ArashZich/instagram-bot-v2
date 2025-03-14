@@ -106,6 +106,16 @@ class UserProfile:
         self.first_seen = first_seen or datetime.now()
         self.metadata = metadata or {}
 
+    @staticmethod
+    def _sanitize_dict_values(d):
+        """Convert complex objects to simple types for MongoDB"""
+        result = {}
+        for k, v in d.items():
+            if isinstance(v, dict):
+                v = UserProfile._sanitize_dict_values(v)
+            result[k] = str(v) if hasattr(v, '__dict__') else v
+        return result
+
     def to_dict(self):
         return {
             "user_id": self.user_id,
@@ -116,7 +126,7 @@ class UserProfile:
             "interaction_count": self.interaction_count,
             "last_interaction": self.last_interaction,
             "first_seen": self.first_seen,
-            "metadata": self.metadata,
+            "metadata": self._sanitize_dict_values(self.metadata) if self.metadata else {},
         }
 
 
