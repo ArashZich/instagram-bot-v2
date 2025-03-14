@@ -107,36 +107,85 @@ class InstagramExplorers:
         try:
             # رویکرد جدید: استفاده از متدهای جایگزین برای دریافت فید
             # روش ۱: استفاده از get_timeline_feed به عنوان یک تابع
+            media_items = []
             try:
                 self.logger.info("تلاش برای دریافت تایم‌لاین با روش اول")
                 if callable(self.client.get_timeline_feed):
                     feed_items = self.client.get_timeline_feed()
                     self.logger.info(
                         f"نوع feed_items با روش اول: {type(feed_items)}")
+
+                    # پردازش دیکشنری برگشتی
+                    if isinstance(feed_items, dict):
+                        # لاگ کردن کلیدهای دیکشنری برای تحلیل ساختار
+                        self.logger.info(
+                            f"کلیدهای feed_items: {list(feed_items.keys())}")
+
+                        # بررسی کلیدهای احتمالی که ممکن است محتوای تایم‌لاین را داشته باشند
+                        if 'feed_items' in feed_items:
+                            media_items = feed_items['feed_items']
+                            self.logger.info(
+                                f"استفاده از کلید 'feed_items' با {len(media_items)} آیتم")
+                        elif 'items' in feed_items:
+                            media_items = feed_items['items']
+                            self.logger.info(
+                                f"استفاده از کلید 'items' با {len(media_items)} آیتم")
+                        elif 'medias' in feed_items:
+                            media_items = feed_items['medias']
+                            self.logger.info(
+                                f"استفاده از کلید 'medias' با {len(media_items)} آیتم")
+                        # بررسی سایر کلیدها که ممکن است محتوای رسانه‌ای داشته باشند
+                        elif 'media' in feed_items:
+                            media_items = feed_items['media']
+                            self.logger.info(
+                                f"استفاده از کلید 'media' با {len(media_items)} آیتم")
+                        elif 'feed' in feed_items:
+                            media_items = feed_items['feed']
+                            self.logger.info(
+                                f"استفاده از کلید 'feed' با {len(media_items)} آیتم")
+                        else:
+                            # اگر هیچ یک از کلیدهای شناخته شده پیدا نشد، سعی کنید اولین آرایه را پیدا کنید
+                            for key, value in feed_items.items():
+                                if isinstance(value, list) and len(value) > 0:
+                                    media_items = value
+                                    self.logger.info(
+                                        f"استفاده از کلید '{key}' با {len(media_items)} آیتم")
+                                    break
+
+                            if not media_items:
+                                self.logger.warning(
+                                    "ساختار دیکشنری feed_items ناشناخته است، تبدیل به لیست خالی")
+                                media_items = []
+                    elif isinstance(feed_items, list):
+                        media_items = feed_items
+                    else:
+                        self.logger.warning(
+                            f"feed_items یک لیست یا دیکشنری نیست، تبدیل به لیست خالی: {type(feed_items)}")
+                        media_items = []
                 else:
                     self.logger.warning(
                         "get_timeline_feed یک تابع قابل فراخوانی نیست!")
-                    feed_items = []
+                    media_items = []
             except Exception as e:
                 self.logger.warning(f"خطا در دریافت تایم‌لاین با روش اول: {e}")
-                feed_items = []
+                media_items = []
 
             # بررسی نتیجه اولیه
-            if not feed_items or (isinstance(feed_items, list) and len(feed_items) == 0):
+            if not media_items:
                 # روش ۲: استفاده از user_medias برای فید
                 try:
                     self.logger.info("تلاش برای دریافت مدیا با روش دوم")
                     user_id = self.client.user_id
-                    feed_items = self.client.user_medias(
+                    media_items = self.client.user_medias(
                         user_id, 20)  # دریافت 20 پست اخیر کاربر
                     self.logger.info(
-                        f"تعداد آیتم‌های یافت شده با روش دوم: {len(feed_items) if isinstance(feed_items, list) else 'غیر لیست'}")
+                        f"تعداد آیتم‌های یافت شده با روش دوم: {len(media_items) if isinstance(media_items, list) else 'غیر لیست'}")
                 except Exception as e:
                     self.logger.warning(f"خطا در دریافت مدیا با روش دوم: {e}")
-                    feed_items = []
+                    media_items = []
 
             # بررسی نتیجه دوم
-            if not feed_items or (isinstance(feed_items, list) and len(feed_items) == 0):
+            if not media_items:
                 # روش ۳: استفاده از hashtag_medias_recent برای دریافت پست‌های اخیر یک هشتگ عمومی
                 try:
                     self.logger.info(
@@ -149,21 +198,20 @@ class InstagramExplorers:
                     self.logger.info(
                         f"استفاده از هشتگ {hashtag} برای جایگزینی تایم‌لاین")
 
-                    feed_items = self.client.hashtag_medias_recent(hashtag, 10)
+                    media_items = self.client.hashtag_medias_recent(
+                        hashtag, 10)
                     self.logger.info(
-                        f"تعداد آیتم‌های یافت شده با روش سوم: {len(feed_items) if isinstance(feed_items, list) else 'غیر لیست'}")
+                        f"تعداد آیتم‌های یافت شده با روش سوم: {len(media_items) if isinstance(media_items, list) else 'غیر لیست'}")
                 except Exception as e:
                     self.logger.warning(
                         f"خطا در دریافت پست‌های هشتگ با روش سوم: {e}")
-                    feed_items = []
+                    media_items = []
 
-            # اطمینان از اینکه feed_items یک لیست است
-            if not isinstance(feed_items, list):
+            # اطمینان از اینکه media_items یک لیست است
+            if not isinstance(media_items, list):
                 self.logger.warning(
-                    f"feed_items یک لیست نیست، تبدیل به لیست خالی: {type(feed_items)}")
+                    f"media_items یک لیست نیست، تبدیل به لیست خالی: {type(media_items)}")
                 media_items = []
-            else:
-                media_items = feed_items
 
             self.logger.info(
                 f"تعداد {len(media_items)} آیتم در تایم‌لاین یافت شد")
