@@ -95,52 +95,65 @@ class InstagramExplorers:
         self.logger.info("بررسی تایم‌لاین")
 
         try:
-            # دریافت فید تایم‌لاین
-            feed_items = self.client.get_timeline_feed()
-            self.logger.debug(f"Timeline feed type: {type(feed_items)}")
+            # رویکرد جدید: استفاده از متدهای جایگزین برای دریافت فید
+            # روش ۱: استفاده از get_timeline_feed به عنوان یک تابع
+            try:
+                self.logger.info("تلاش برای دریافت تایم‌لاین با روش اول")
+                if callable(self.client.get_timeline_feed):
+                    feed_items = self.client.get_timeline_feed()
+                    self.logger.info(
+                        f"نوع feed_items با روش اول: {type(feed_items)}")
+                else:
+                    self.logger.warning(
+                        "get_timeline_feed یک تابع قابل فراخوانی نیست!")
+                    feed_items = []
+            except Exception as e:
+                self.logger.warning(f"خطا در دریافت تایم‌لاین با روش اول: {e}")
+                feed_items = []
 
-            # بررسی و تبدیل feed_items به یک لیست اگر نیست
-            media_items = []
-
-            # اضافه کردن بررسی اولیه برای جلوگیری از خطا
-            if callable(feed_items) and not isinstance(feed_items, (list, dict)):
-                self.logger.warning(
-                    f"feed_items یک تابع است! در حال فراخوانی...")
+            # بررسی نتیجه اولیه
+            if not feed_items or (isinstance(feed_items, list) and len(feed_items) == 0):
+                # روش ۲: استفاده از user_medias برای فید
                 try:
-                    feed_items = feed_items()
-                    self.logger.debug(
-                        f"نتیجه فراخوانی feed_items: {type(feed_items)}")
+                    self.logger.info("تلاش برای دریافت مدیا با روش دوم")
+                    user_id = self.client.user_id
+                    feed_items = self.client.user_medias(
+                        user_id, 20)  # دریافت 20 پست اخیر کاربر
+                    self.logger.info(
+                        f"تعداد آیتم‌های یافت شده با روش دوم: {len(feed_items) if isinstance(feed_items, list) else 'غیر لیست'}")
                 except Exception as e:
-                    self.logger.error(f"خطا در فراخوانی feed_items: {e}")
+                    self.logger.warning(f"خطا در دریافت مدیا با روش دوم: {e}")
                     feed_items = []
 
-            # اکنون با feed_items به عنوان غیر-callable کار می‌کنیم
-            if hasattr(feed_items, 'items'):
-                # اگر feed_items یک شی با ویژگی items است
-                media_items = feed_items.items
-                self.logger.debug(
-                    f"Feed items has 'items' attribute: {type(media_items)}")
-            elif isinstance(feed_items, dict) and 'items' in feed_items:
-                # اگر feed_items یک دیکشنری با کلید items است
-                media_items = feed_items['items']
-                self.logger.debug(
-                    f"Feed items is dict with 'items' key: {type(media_items)}")
-            elif isinstance(feed_items, list):
-                # اگر feed_items قبلاً یک لیست است
-                media_items = feed_items
-                self.logger.debug(
-                    f"Feed items is already a list: {len(media_items)}")
-            else:
-                self.logger.warning(
-                    f"ساختار نامشخص برای feed_items: {type(feed_items)}")
-                # در صورت ساختار نامشخص، از یک لیست خالی استفاده می‌کنیم
-                media_items = []
+            # بررسی نتیجه دوم
+            if not feed_items or (isinstance(feed_items, list) and len(feed_items) == 0):
+                # روش ۳: استفاده از hashtag_medias_recent برای دریافت پست‌های اخیر یک هشتگ عمومی
+                try:
+                    self.logger.info(
+                        "تلاش برای دریافت پست‌های هشتگ با روش سوم")
+                    from app.config import PERSIAN_HASHTAGS
+                    import random
 
-            # اطمینان از اینکه media_items یک لیست است
-            if not isinstance(media_items, list):
+                    # انتخاب یک هشتگ تصادفی
+                    hashtag = random.choice(PERSIAN_HASHTAGS)
+                    self.logger.info(
+                        f"استفاده از هشتگ {hashtag} برای جایگزینی تایم‌لاین")
+
+                    feed_items = self.client.hashtag_medias_recent(hashtag, 10)
+                    self.logger.info(
+                        f"تعداد آیتم‌های یافت شده با روش سوم: {len(feed_items) if isinstance(feed_items, list) else 'غیر لیست'}")
+                except Exception as e:
+                    self.logger.warning(
+                        f"خطا در دریافت پست‌های هشتگ با روش سوم: {e}")
+                    feed_items = []
+
+            # اطمینان از اینکه feed_items یک لیست است
+            if not isinstance(feed_items, list):
                 self.logger.warning(
-                    f"media_items یک لیست نیست، تبدیل به لیست خالی: {type(media_items)}")
+                    f"feed_items یک لیست نیست، تبدیل به لیست خالی: {type(feed_items)}")
                 media_items = []
+            else:
+                media_items = feed_items
 
             self.logger.info(
                 f"تعداد {len(media_items)} آیتم در تایم‌لاین یافت شد")
@@ -153,15 +166,20 @@ class InstagramExplorers:
 
                 for item in selected_items:
                     try:
+                        # در روش‌های مختلف، ساختار متفاوتی داریم
+                        media = item  # در روش‌های 2 و 3 معمولاً خود آیتم، مدیا است
+
                         # بررسی ساختار آیتم
                         if hasattr(item, 'media_or_ad'):
                             media = item.media_or_ad
                         elif isinstance(item, dict) and 'media_or_ad' in item:
                             media = item['media_or_ad']
-                        else:
-                            self.logger.warning(
-                                f"ساختار آیتم نامشخص است: {type(item)}")
-                            continue
+
+                        # لاگ اطلاعات مدیا برای عیب‌یابی
+                        self.logger.debug(f"نوع آیتم مدیا: {type(media)}")
+                        if hasattr(media, '__dict__'):
+                            self.logger.debug(
+                                f"ویژگی‌های آیتم مدیا: {dir(media)[:10]}")
 
                         # استخراج اطلاعات کاربر
                         user_id = None
@@ -173,8 +191,19 @@ class InstagramExplorers:
                         elif isinstance(media, dict) and 'user' in media:
                             user_id = media['user']['pk']
                             username = media['user']['username']
+                        elif hasattr(media, 'user_id'):
+                            # دریافت اطلاعات کاربر با user_id موجود
+                            user_id = media.user_id
+                            try:
+                                user_info = self.client.user_info(user_id)
+                                username = user_info.username
+                            except Exception as e:
+                                self.logger.warning(
+                                    f"خطا در دریافت اطلاعات کاربر: {e}")
+                                continue
                         else:
-                            self.logger.warning("اطلاعات کاربر یافت نشد")
+                            self.logger.warning(
+                                f"اطلاعات کاربر یافت نشد: {type(media)}")
                             continue
 
                         # بررسی محتوای فارسی
@@ -185,26 +214,55 @@ class InstagramExplorers:
                             caption = media.caption
                         elif isinstance(media, dict) and 'caption' in media and media['caption']:
                             caption = media['caption']
+                        elif hasattr(media, 'caption_text') and media.caption_text:
+                            caption = media.caption_text
 
                         if caption:
+                            self.logger.debug(f"کپشن پست: {caption[:50]}")
                             has_persian = is_persian_content(caption)
 
                         # اولویت دادن به محتوای فارسی
                         if has_persian:
                             self.logger.info(
-                                f"✅ محتوای فارسی در تایم‌لاین یافت شد: {caption[:30]}...")
+                                f"✅ محتوای فارسی در تایم‌لاین یافت شد: {caption[:30] if caption else ''}...")
+
                             # تعامل با محتوای فارسی
-                            media_id = media.id if hasattr(
-                                media, 'id') else media.get('id')
-                            comment_result = self.actions.comment_on_media(
-                                media_id, username, user_id, None, update_user_profile_func)
+                            media_id = None
+                            if hasattr(media, 'id'):
+                                media_id = media.id
+                            elif isinstance(media, dict) and 'id' in media:
+                                media_id = media['id']
+                            elif hasattr(media, 'pk'):
+                                media_id = media.pk
+
+                            if media_id:
+                                self.logger.info(
+                                    f"تلاش برای کامنت گذاشتن روی پست با شناسه {media_id}")
+                                comment_result = self.actions.comment_on_media(
+                                    media_id, username, user_id, None, update_user_profile_func)
+
+                                if comment_result:
+                                    self.logger.info(
+                                        f"✅ کامنت با موفقیت ارسال شد")
+                                else:
+                                    self.logger.warning(
+                                        f"❌ خطا در ارسال کامنت")
+                            else:
+                                self.logger.warning(f"❌ شناسه مدیا یافت نشد")
                         else:
                             # شانس کمتر برای تعامل با محتوای غیر فارسی
                             if random.random() < 0.2:  # 20% احتمال
-                                media_id = media.id if hasattr(
-                                    media, 'id') else media.get('id')
-                                comment_result = self.actions.comment_on_media(
-                                    media_id, username, user_id, None, update_user_profile_func)
+                                media_id = None
+                                if hasattr(media, 'id'):
+                                    media_id = media.id
+                                elif isinstance(media, dict) and 'id' in media:
+                                    media_id = media['id']
+                                elif hasattr(media, 'pk'):
+                                    media_id = media.pk
+
+                                if media_id:
+                                    comment_result = self.actions.comment_on_media(
+                                        media_id, username, user_id, None, update_user_profile_func)
 
                         # استراحت بین اکشن‌ها
                         human_sleep(15, 30)  # استراحت کوتاه‌تر
