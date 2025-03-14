@@ -3,6 +3,7 @@ import re  # این خط رو اضافه کن
 from typing import List, Optional
 from datetime import datetime
 from loguru import logger
+import json
 import traceback
 
 
@@ -212,8 +213,25 @@ class InstagramActions:
             # دریافت ایموجی واکنش
             reaction = get_random_reaction()
 
-            # واکنش به استوری
-            self.client.story_send_reaction(story_id, reaction)
+            # واکنش به استوری - مدیریت خطای JSONDecodeError
+            try:
+                self.client.story_send_reaction(story_id, reaction)
+                self.logger.info(
+                    f"✅ واکنش {reaction} به استوری {story_id} از {username} ارسال شد")
+            except json.JSONDecodeError as je:
+                self.logger.warning(
+                    f"خطای JSONDecodeError در ارسال واکنش: {je}")
+                # ارسال واکنش با روش جایگزین
+                try:
+                    # روش جایگزین - می‌توان از سایر متدهای کتابخانه استفاده کرد
+                    # مثال: self.client.direct_send(reaction, [user_id], thread_ids=[story_id])
+                    # یا روش‌های دیگر مختص کتابخانه شما
+                    human_sleep(2, 5)
+                    return False
+                except Exception as e:
+                    self.logger.error(f"خطا در روش جایگزین ارسال واکنش: {e}")
+                    return False
+
             human_sleep(4, 10)  # تأخیر طبیعی‌تر
 
             # ثبت تعامل
