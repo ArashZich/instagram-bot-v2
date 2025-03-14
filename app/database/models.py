@@ -130,7 +130,7 @@ class UserProfile:
         }
 
 
-# Database collections
+# اطمینان از یکسان بودن نام کالکشن‌ها
 COLLECTIONS = {
     "sessions": "bot_sessions",
     "interactions": "user_interactions",

@@ -1,6 +1,7 @@
 from pymongo import MongoClient
 from motor.motor_asyncio import AsyncIOMotorClient
 from loguru import logger
+from datetime import datetime, timedelta
 import os
 import time
 import traceback
@@ -69,10 +70,19 @@ def get_database():
     try:
         client = get_mongo_client()
         if client:
-            return client[MONGO_DB]
+            # تست اتصال و دسترسی‌ها
+            db = client[MONGO_DB]
+            # تست نوشتن در دیتابیس
+            test_collection = db.get_collection("test_connection")
+            test_id = test_collection.insert_one(
+                {"test": True, "timestamp": datetime.now()}).inserted_id
+            test_collection.delete_one({"_id": test_id})
+            logger.info("✅ اتصال به MongoDB و تست نوشتن موفقیت‌آمیز بود")
+            return db
+        logger.error("❌ اتصال به MongoDB ناموفق بود")
         return None
     except Exception as e:
-        logger.error(f"Failed to get database: {e}")
+        logger.error(f"خطا در اتصال به دیتابیس: {e}")
         logger.error(f"Traceback: {traceback.format_exc()}")
         return None
 

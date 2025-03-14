@@ -102,11 +102,16 @@ async def get_interactions(
             date_query["$lte"] = datetime.fromisoformat(end_date)
         query["timestamp"] = date_query
 
-    cursor = db[get_collection_name("interactions")].find(
+    collection_name = get_collection_name("interactions")
+    print(f"Using collection: {collection_name}")
+    print(f"Query: {query}")
+
+    cursor = db[collection_name].find(
         query).sort("timestamp", -1).skip(skip).limit(limit)
 
     interactions = []
     async for doc in cursor:
+        print(f"Found document: {doc}")
         interactions.append(convert_objectid(doc))
 
     return interactions

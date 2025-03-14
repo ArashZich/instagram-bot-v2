@@ -5,6 +5,7 @@ import traceback
 import schedule
 from datetime import datetime, timedelta
 from loguru import logger
+import json
 from pathlib import Path
 
 from app.config import (
@@ -71,28 +72,37 @@ class InstagramBot(SessionManager):
                     self.logger.error("نمی‌توان به دیتابیس متصل شد!")
                     return False
 
-            # دریافت پروفایل کاربر موجود
-            # Sanitize inputs to ensure MongoDB compatibility
+            # تعیین نام کالکشن
+            collection_name = get_collection_name("users")
+            self.logger.info(
+                f"بررسی پروفایل کاربر {username} در کالکشن {collection_name}")
+
+            # بررسی وجود کالکشن و ایجاد آن در صورت نیاز
+            collections = self.db.list_collection_names()
+            if collection_name not in collections:
+                self.logger.warning(
+                    f"کالکشن {collection_name} وجود ندارد، در حال ایجاد...")
+                self.db.create_collection(collection_name)
+
+            # جستجوی کاربر در دیتابیس
+            user_data = self.db[collection_name].find_one({"user_id": user_id})
+
+            # تابع برای پاکسازی داده‌ها قبل از ذخیره در مونگو
             def sanitize_dict(obj):
                 if isinstance(obj, dict):
                     return {key: sanitize_dict(value) for key, value in obj.items() if key != "_id"}
                 elif isinstance(obj, list):
                     return [sanitize_dict(item) for item in list(obj)]
+                elif isinstance(obj, datetime):
+                    return obj  # حفظ اشیاء تاریخ بدون تغییر
                 elif hasattr(obj, "dict") and callable(getattr(obj, "dict")):
-                    # Handle Pydantic models or similar objects
+                    # پشتیبانی از مدل‌های Pydantic یا اشیاء مشابه
                     return sanitize_dict(obj.dict())
                 elif hasattr(obj, "to_dict") and callable(getattr(obj, "to_dict")):
-                    # Handle custom to_dict methods
+                    # پشتیبانی از متدهای to_dict سفارشی
                     return sanitize_dict(obj.to_dict())
                 else:
                     return obj
-
-            collection_name = get_collection_name("users")
-            self.logger.info(
-                f"بررسی پروفایل کاربر {username} در کالکشن {collection_name}")
-
-            user_data = self.db[collection_name].find_one({
-                "user_id": user_id})
 
             if user_data:
                 # به‌روزرسانی پروفایل موجود
@@ -100,87 +110,155 @@ class InstagramBot(SessionManager):
                     f"پروفایل کاربر {username} یافت شد، در حال بروزرسانی...")
 
                 try:
+                    # ایجاد داده‌های به‌روزرسانی
+                    update_data = {
+                        "$set": {
+                            "last_interaction": datetime.now(),
+                            "username": username  # اطمینان از به‌روز بودن نام کاربری
+                        },
+                        "$inc": {
+                            "interaction_count": 1
+                        }
+                    }
+
+                    # اضافه کردن نوع تعامل به لیست اگر وجود ندارد
+                    update_data["$addToSet"] = {
+                        "metadata.interaction_types": interaction_type
+                    }
+
+                    # اجرای عملیات به‌روزرسانی
                     update_result = self.db[collection_name].update_one(
                         {"user_id": user_id},
-                        {
-                            "$set": {
-                                "last_interaction": datetime.now()
-                            },
-                            "$inc": {
-                                "interaction_count": 1
-                            },
-                            "$addToSet": {
-                                "metadata.interaction_types": interaction_type
-                            }
-                        }
+                        update_data
                     )
-                    self.logger.info(
-                        f"نتیجه بروزرسانی: modified_count={update_result.modified_count}, matched_count={update_result.matched_count}")
+
+                    # بررسی نتیجه به‌روزرسانی
+                    if update_result.modified_count > 0:
+                        self.logger.info(
+                            f"پروفایل کاربر {username} با موفقیت به‌روزرسانی شد")
+                    else:
+                        self.logger.warning(
+                            f"پروفایل کاربر {username} تغییر نکرد. matched_count={update_result.matched_count}")
+
+                    # برای اطمینان، بررسی کنیم که آیا پروفایل به درستی به‌روزرسانی شده است
+                    updated_user = self.db[collection_name].find_one(
+                        {"user_id": user_id})
+                    if updated_user:
+                        self.logger.info(
+                            f"بررسی پروفایل به‌روزرسانی شده: interaction_count={updated_user.get('interaction_count', 'N/A')}")
+                    else:
+                        self.logger.warning(
+                            "پروفایل پس از به‌روزرسانی یافت نشد!")
+
                 except Exception as update_error:
                     self.logger.error(
                         f"خطا در بروزرسانی پروفایل: {update_error}")
                     self.logger.error(f"traceback: {traceback.format_exc()}")
+                    # حتی در صورت خطا، ادامه می‌دهیم تا حداقل تعامل ثبت شود
             else:
                 # ایجاد پروفایل کاربر جدید
                 self.logger.info(
                     f"پروفایل کاربر {username} یافت نشد، در حال ایجاد پروفایل جدید...")
 
-                # Get user info safely
+                # تلاش برای دریافت اطلاعات کاربر
                 user_info = None
                 try:
                     user_info = self.client.user_info_by_username(username)
                     self.logger.debug(
-                        f"Retrieved user info for {username}: {type(user_info)}")
+                        f"اطلاعات کاربر {username} دریافت شد: {type(user_info)}")
                 except Exception as e:
                     self.logger.warning(
-                        f"Could not fetch user info for {username}: {e}")
+                        f"خطا در دریافت اطلاعات کاربر {username}: {e}")
 
-                # Prepare user info dict
+                # آماده‌سازی دیکشنری اطلاعات کاربر
                 user_info_dict = {}
                 if user_info:
                     try:
-                        # Convert to dict based on what's available
+                        # تبدیل به دیکشنری بر اساس آنچه در دسترس است
                         if hasattr(user_info, "dict") and callable(getattr(user_info, "dict")):
                             user_info_dict = sanitize_dict(user_info.dict())
                         elif hasattr(user_info, "to_dict") and callable(getattr(user_info, "to_dict")):
                             user_info_dict = sanitize_dict(user_info.to_dict())
                         elif hasattr(user_info, "__dict__"):
                             user_info_dict = sanitize_dict(user_info.__dict__)
+
+                        # حذف فیلدهای غیرضروری که ممکن است خطا ایجاد کنند
+                        if "_id" in user_info_dict:
+                            del user_info_dict["_id"]
                     except Exception as e:
                         self.logger.error(
-                            f"Error converting user_info to dict: {e}")
+                            f"خطا در تبدیل user_info به دیکشنری: {e}")
                         self.logger.error(
                             f"traceback: {traceback.format_exc()}")
 
-                # Create new user profile
+                # تعیین اینکه آیا کاربر فالور است یا ما او را فالو کرده‌ایم
+                is_follower = False
+                is_following = False
+
+                try:
+                    # دریافت دنبال‌کنندگان و دنبال‌شوندگان
+                    followers = self.client.user_followers(self.client.user_id)
+                    following = self.client.user_following(self.client.user_id)
+
+                    # بررسی وضعیت کاربر
+                    if isinstance(followers, dict):
+                        is_follower = user_id in followers.keys()
+
+                    if isinstance(following, dict):
+                        is_following = user_id in following.keys()
+
+                    self.logger.info(
+                        f"وضعیت کاربر {username}: فالوئر={is_follower}, فالوئینگ={is_following}")
+                except Exception as e:
+                    self.logger.warning(
+                        f"خطا در بررسی وضعیت فالو کاربر {username}: {e}")
+
+                # ایجاد پروفایل کاربر جدید
+                current_time = datetime.now()
                 user_profile = UserProfile(
                     user_id=user_id,
                     username=username,
                     full_name=user_info.full_name if user_info and hasattr(
                         user_info, "full_name") else None,
-                    is_following=False,
-                    is_follower=False,
+                    is_following=is_following,
+                    is_follower=is_follower,
                     interaction_count=1,
-                    last_interaction=datetime.now(),
-                    first_seen=datetime.now(),
+                    last_interaction=current_time,
+                    first_seen=current_time,
                     metadata={
                         "interaction_types": [interaction_type],
                         "user_info": user_info_dict
                     }
                 )
 
-                # Convert to dict and sanitize
+                # تبدیل به دیکشنری و پاکسازی
                 user_profile_dict = sanitize_dict(user_profile.to_dict())
 
                 # لاگ داده‌های پروفایل برای دیباگ
                 self.logger.debug(
-                    f"داده‌های پروفایل کاربر: {user_profile_dict}")
+                    f"داده‌های پروفایل کاربر برای درج: {json.dumps(user_profile_dict, default=str)[:1000]}...")
 
                 try:
+                    # درج در دیتابیس
                     result = self.db[collection_name].insert_one(
                         user_profile_dict)
-                    self.logger.info(
-                        f"پروفایل کاربر {username} با ID {result.inserted_id} ایجاد شد")
+
+                    if result.inserted_id:
+                        self.logger.info(
+                            f"پروفایل کاربر {username} با ID {result.inserted_id} ایجاد شد")
+
+                        # بررسی موفقیت درج
+                        inserted_doc = self.db[collection_name].find_one(
+                            {"_id": result.inserted_id})
+                        if inserted_doc:
+                            self.logger.info(
+                                f"پروفایل با موفقیت درج شد و بازیابی شد")
+                        else:
+                            self.logger.warning(
+                                f"پروفایل درج شد اما بازیابی نشد!")
+                    else:
+                        self.logger.warning(
+                            f"پروفایل کاربر {username} درج نشد!")
                 except Exception as insert_error:
                     self.logger.error(
                         f"خطا در درج پروفایل کاربر: {insert_error}")

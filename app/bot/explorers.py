@@ -50,6 +50,11 @@ class InstagramExplorers:
                                 self.logger.info(
                                     f"✅ محتوای فارسی یافت شد: {media.caption[:30] if media.caption else ''}...")
                                 # تعامل با محتوای فارسی
+                                if update_user_profile_func is None:
+                                    self.logger.warning(
+                                        "تابع update_user_profile_func مشخص نشده است!")
+                                    # در اینجا می‌توانید یک تابع پیش‌فرض یا یک مقدار برگشتی برای جلوگیری از خطا قرار دهید
+
                                 comment_result = self.actions.comment_on_media(
                                     media.id, username, user_id, hashtag, update_user_profile_func)
 
@@ -71,6 +76,9 @@ class InstagramExplorers:
                         except Exception as e:
                             self.logger.error(
                                 f"❌ خطا در تعامل با رسانه {media.id}: {e}")
+                            import traceback
+                            self.logger.error(
+                                f"Traceback: {traceback.format_exc()}")
 
                     # استراحت کوتاه‌تر بین هر هشتگ
                     sleep_time = random.randint(30, 60)  # 30 ثانیه تا 1 دقیقه
@@ -87,6 +95,8 @@ class InstagramExplorers:
                         f"❌ چالش امنیتی در هنگام جستجوی هشتگ {hashtag}")
                     return False
                 self.logger.error(f"❌ خطا در جستجوی هشتگ {hashtag}: {e}")
+                import traceback
+                self.logger.error(f"Traceback: {traceback.format_exc()}")
 
         return True
 

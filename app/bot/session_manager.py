@@ -87,19 +87,36 @@ class SessionManager:
 
     def record_session_start(self):
         """ثبت شروع سشن در دیتابیس"""
-        session = BotSession(
-            session_id=self.session_id,
-            started_at=datetime.now(),
-            user_agent="instagrapi-client",
-            session_data={
-                "username": self.username,
-                "device_id": self.client.device_id if hasattr(self.client, "device_id") else None
-            },
-            is_active=True
-        )
+        try:
+            session = BotSession(
+                session_id=self.session_id,
+                started_at=datetime.now(),
+                user_agent="instagrapi-client",
+                session_data={
+                    "username": self.username,
+                    "device_id": self.client.device_id if hasattr(self.client, "device_id") else None
+                },
+                is_active=True
+            )
 
-        self.db[get_collection_name("sessions")].insert_one(session.to_dict())
-        self.logger.info(f"Recorded session start with ID: {self.session_id}")
+            # اطمینان از اتصال به دیتابیس
+            if self.db is None:
+                self.logger.error("اتصال به دیتابیس برقرار نیست!")
+                self.db = get_database()
+                if self.db is None:
+                    self.logger.error("نمی‌توان به دیتابیس متصل شد!")
+                    return False
+
+            result = self.db[get_collection_name(
+                "sessions")].insert_one(session.to_dict())
+            self.logger.info(
+                f"Recorded session start with ID: {self.session_id}, MongoDB ID: {result.inserted_id}")
+            return True
+        except Exception as e:
+            self.logger.error(f"خطا در ثبت شروع جلسه: {e}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            return False
 
     def record_session_end(self):
         """ثبت پایان سشن در دیتابیس"""
