@@ -3,12 +3,29 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from loguru import logger
 import os
 import time
+import traceback
 from app.config import MONGO_URI, MONGO_DB
+
+# Singleton client
+_mongo_client = None
 
 # Create synchronous MongoDB client
 
 
 def get_mongo_client():
+    global _mongo_client
+
+    # Return existing client if already connected
+    if _mongo_client is not None:
+        try:
+            # Test connection
+            _mongo_client.admin.command('ping')
+            return _mongo_client
+        except Exception:
+            # Connection failed, reset and retry
+            _mongo_client = None
+            logger.warning("اتصال موجود به MongoDB قطع شده است، تلاش مجدد...")
+
     try:
         # وصل شدن به مونگو با تلاش مجدد
         max_retries = 5
@@ -18,16 +35,19 @@ def get_mongo_client():
             try:
                 logger.info(
                     f"Attempting to connect to MongoDB at {MONGO_URI} (attempt {retry_count+1}/{max_retries})")
-                client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=10000)
+                client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=10000,
+                                     connectTimeoutMS=20000, socketTimeoutMS=20000)
 
                 # چک کردن اتصال
                 client.admin.command('ping')
                 logger.info(f"✅ Connected to MongoDB at {MONGO_URI}")
+                _mongo_client = client
                 return client
             except Exception as e:
                 retry_count += 1
                 logger.warning(
                     f"⚠️ Attempt {retry_count}/{max_retries} failed to connect to MongoDB: {e}")
+                logger.warning(f"Traceback: {traceback.format_exc()}")
 
                 if retry_count < max_retries:
                     # انتظار قبل از تلاش مجدد
@@ -39,22 +59,31 @@ def get_mongo_client():
                     raise
     except Exception as e:
         logger.error(f"❌ Failed to connect to MongoDB: {e}")
-        raise
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return None
 
 # Get database
 
 
 def get_database():
-    client = get_mongo_client()
-    return client[MONGO_DB]
+    try:
+        client = get_mongo_client()
+        if client:
+            return client[MONGO_DB]
+        return None
+    except Exception as e:
+        logger.error(f"Failed to get database: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return None
 
 # Create asynchronous MongoDB client for FastAPI
 
 
 async def get_async_database():
     try:
-        client = AsyncIOMotorClient(MONGO_URI)
+        client = AsyncIOMotorClient(MONGO_URI, serverSelectionTimeoutMS=10000)
         return client[MONGO_DB]
     except Exception as e:
         logger.error(f"Failed to connect to async MongoDB: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise

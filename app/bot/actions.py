@@ -26,8 +26,17 @@ class InstagramActions:
     def _record_interaction(self, interaction: UserInteraction, update_user_profile_func):
         """ثبت تعامل کاربر در دیتابیس"""
         from app.database.models import get_collection_name
+        from app.database.connection import get_database
 
         try:
+            # اطمینان از اتصال به دیتابیس
+            if self.db is None:
+                self.logger.error("اتصال به دیتابیس برقرار نیست، تلاش مجدد...")
+                self.db = get_database()
+                if self.db is None:
+                    self.logger.error("نمی‌توان به دیتابیس متصل شد!")
+                    return False
+
             # تبدیل به دیکشنری برای ذخیره
             interaction_dict = interaction.to_dict()
 
@@ -52,27 +61,19 @@ class InstagramActions:
 
             # بررسی نام کالکشن صحیح
             collection_name = get_collection_name("interactions")
-
-            # اطمینان از اتصال به دیتابیس
-            if not self.db:
-                self.logger.error("❌ خطا: اتصال به دیتابیس برقرار نیست!")
-                from app.database.connection import get_database
-                self.db = get_database()
-                if not self.db:
-                    self.logger.error("❌ خطا: نمی‌توان به دیتابیس متصل شد!")
-                    return False
-
             self.logger.info(f"ذخیره تعامل در کالکشن: {collection_name}")
-            self.logger.debug(f"داده تعامل: {interaction_dict}")
 
-            # ثبت در دیتابیس با مدیریت خطا
+            # لاگ داده‌های تعامل برای دیباگ
+            self.logger.debug(
+                f"داده‌های تعامل: {json.dumps(interaction_dict, default=str)[:200]}...")
+
+            # ثبت در دیتابیس
             try:
                 result = self.db[collection_name].insert_one(interaction_dict)
                 self.logger.info(f"تعامل با ID: {result.inserted_id} ثبت شد.")
             except Exception as insert_error:
-                self.logger.error(f"❌ خطا در درج تعامل: {insert_error}")
-                import traceback
-                self.logger.error(f"جزئیات خطا: {traceback.format_exc()}")
+                self.logger.error(f"خطا در درج تعامل: {insert_error}")
+                self.logger.error(f"traceback: {traceback.format_exc()}")
                 return False
 
             # لاگ کردن نتیجه با شناسه
@@ -222,10 +223,14 @@ class InstagramActions:
             comment_text = humanize_text(get_random_comment(final_topic))
 
             # افزودن کامنت
+            self.logger.info(
+                f"ارسال کامنت برای پست {media_id} از کاربر {username}: {comment_text}")
             self.client.media_comment(media_id, comment_text)
             human_sleep(5, 15)  # تأخیر طبیعی‌تر و طولانی‌تر
 
             # ثبت تعامل
+            self.logger.info(
+                f"ایجاد رکورد تعامل برای کاربر {username} با شناسه {user_id}")
             interaction = UserInteraction(
                 user_id=user_id,
                 username=username,
@@ -233,6 +238,7 @@ class InstagramActions:
                 timestamp=datetime.now(),
                 content=comment_text,
                 media_id=media_id,
+                status="success",
                 metadata={
                     "topic": final_topic,
                     "is_persian": True,
@@ -240,7 +246,10 @@ class InstagramActions:
                     "hashtags": hashtags
                 }
             )
-            self._record_interaction(interaction, update_user_profile_func)
+            self.logger.info(f"در حال ثبت تعامل کامنت برای {username}")
+            result = self._record_interaction(
+                interaction, update_user_profile_func)
+            self.logger.info(f"نتیجه ثبت تعامل: {result}")
 
             self.logger.info(
                 f"Commented on media {media_id} from {username} with topic {final_topic}: {comment_text}")
@@ -253,6 +262,7 @@ class InstagramActions:
                 return False
 
             self.logger.error(f"Failed to comment on media {media_id}: {e}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
             return False
 
     def react_to_story(self, story_id: str, username: str, user_id: str, update_user_profile_func):

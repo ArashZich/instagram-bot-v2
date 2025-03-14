@@ -58,16 +58,20 @@ class InstagramBot(SessionManager):
 
     def _update_user_profile(self, user_id: str, username: str, interaction_type: str):
         """به‌روزرسانی یا ایجاد پروفایل کاربر در دیتابیس"""
+        from app.database.models import get_collection_name, UserProfile
+        from app.database.connection import get_database
+
         try:
-            # بررسی اتصال به دیتابیس
-            if not self.db:
-                self.logger.error("❌ خطا: اتصال به دیتابیس برقرار نیست!")
-                from app.database.connection import get_database
+            # اطمینان از اتصال به دیتابیس
+            if self.db is None:
+                self.logger.error(
+                    "اتصال به دیتابیس در _update_user_profile برقرار نیست، تلاش مجدد...")
                 self.db = get_database()
-                if not self.db:
-                    self.logger.error("❌ خطا: نمی‌توان به دیتابیس متصل شد!")
+                if self.db is None:
+                    self.logger.error("نمی‌توان به دیتابیس متصل شد!")
                     return False
 
+            # دریافت پروفایل کاربر موجود
             # Sanitize inputs to ensure MongoDB compatibility
             def sanitize_dict(obj):
                 if isinstance(obj, dict):
@@ -85,69 +89,70 @@ class InstagramBot(SessionManager):
 
             collection_name = get_collection_name("users")
             self.logger.info(
-                f"در حال بروزرسانی یا ایجاد پروفایل کاربر {username} در کالکشن {collection_name}")
+                f"بررسی پروفایل کاربر {username} در کالکشن {collection_name}")
 
-            # دریافت پروفایل کاربر موجود
-            user_data = self.db[collection_name].find_one({"user_id": user_id})
+            user_data = self.db[collection_name].find_one({
+                "user_id": user_id})
 
             if user_data:
                 # به‌روزرسانی پروفایل موجود
                 self.logger.info(
-                    f"پروفایل کاربر {username} یافت شد. در حال بروزرسانی...")
+                    f"پروفایل کاربر {username} یافت شد، در حال بروزرسانی...")
 
-                update_result = self.db[collection_name].update_one(
-                    {"user_id": user_id},
-                    {
-                        "$set": {
-                            "last_interaction": datetime.now()
-                        },
-                        "$inc": {
-                            "interaction_count": 1
-                        },
-                        "$addToSet": {
-                            "metadata.interaction_types": interaction_type
+                try:
+                    update_result = self.db[collection_name].update_one(
+                        {"user_id": user_id},
+                        {
+                            "$set": {
+                                "last_interaction": datetime.now()
+                            },
+                            "$inc": {
+                                "interaction_count": 1
+                            },
+                            "$addToSet": {
+                                "metadata.interaction_types": interaction_type
+                            }
                         }
-                    }
-                )
-
-                if update_result.modified_count > 0:
+                    )
                     self.logger.info(
-                        f"پروفایل کاربر {username} با موفقیت بروزرسانی شد.")
-                else:
-                    self.logger.warning(
-                        f"پروفایل کاربر {username} تغییری نکرد!")
+                        f"نتیجه بروزرسانی: modified_count={update_result.modified_count}, matched_count={update_result.matched_count}")
+                except Exception as update_error:
+                    self.logger.error(
+                        f"خطا در بروزرسانی پروفایل: {update_error}")
+                    self.logger.error(f"traceback: {traceback.format_exc()}")
             else:
-                # Get user info safely
+                # ایجاد پروفایل کاربر جدید
                 self.logger.info(
-                    f"پروفایل کاربر {username} یافت نشد. در حال ایجاد پروفایل جدید...")
+                    f"پروفایل کاربر {username} یافت نشد، در حال ایجاد پروفایل جدید...")
+
+                # Get user info safely
                 user_info = None
                 try:
                     user_info = self.client.user_info_by_username(username)
                     self.logger.debug(
-                        f"اطلاعات کاربر {username} دریافت شد: {type(user_info)}")
+                        f"Retrieved user info for {username}: {type(user_info)}")
                 except Exception as e:
                     self.logger.warning(
-                        f"نمی‌توان اطلاعات کاربر {username} را دریافت کرد: {e}")
+                        f"Could not fetch user info for {username}: {e}")
 
-                # Prepare user profile with sanitized data
+                # Prepare user info dict
                 user_info_dict = {}
                 if user_info:
                     try:
-                        # Convert Pydantic model to dict and sanitize nested objects
+                        # Convert to dict based on what's available
                         if hasattr(user_info, "dict") and callable(getattr(user_info, "dict")):
                             user_info_dict = sanitize_dict(user_info.dict())
                         elif hasattr(user_info, "to_dict") and callable(getattr(user_info, "to_dict")):
                             user_info_dict = sanitize_dict(user_info.to_dict())
                         elif hasattr(user_info, "__dict__"):
                             user_info_dict = sanitize_dict(user_info.__dict__)
-                        else:
-                            self.logger.warning(
-                                f"شیء اطلاعات کاربر متد dict ندارد: {type(user_info)}")
                     except Exception as e:
                         self.logger.error(
-                            f"خطا در تبدیل اطلاعات کاربر به دیکشنری: {e}")
+                            f"Error converting user_info to dict: {e}")
+                        self.logger.error(
+                            f"traceback: {traceback.format_exc()}")
 
-                # ایجاد پروفایل کاربر جدید
+                # Create new user profile
                 user_profile = UserProfile(
                     user_id=user_id,
                     username=username,
@@ -164,26 +169,25 @@ class InstagramBot(SessionManager):
                     }
                 )
 
-                # تبدیل به دیکشنری و پاکسازی داده‌ها
+                # Convert to dict and sanitize
                 user_profile_dict = sanitize_dict(user_profile.to_dict())
 
-                # ذخیره در دیتابیس
+                # لاگ داده‌های پروفایل برای دیباگ
+                self.logger.debug(
+                    f"داده‌های پروفایل کاربر: {user_profile_dict}")
+
                 try:
-                    insert_result = self.db[collection_name].insert_one(
+                    result = self.db[collection_name].insert_one(
                         user_profile_dict)
-                    if insert_result.inserted_id:
-                        self.logger.info(
-                            f"پروفایل کاربر {username} با موفقیت ایجاد شد.")
-                    else:
-                        self.logger.warning(
-                            f"خطا در ایجاد پروفایل کاربر {username}!")
+                    self.logger.info(
+                        f"پروفایل کاربر {username} با ID {result.inserted_id} ایجاد شد")
                 except Exception as insert_error:
                     self.logger.error(
                         f"خطا در درج پروفایل کاربر: {insert_error}")
-                    import traceback
-                    self.logger.error(f"جزئیات خطا: {traceback.format_exc()}")
+                    self.logger.error(f"traceback: {traceback.format_exc()}")
 
             return True
+
         except Exception as e:
             import traceback
             self.logger.error(
