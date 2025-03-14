@@ -243,29 +243,74 @@ class InstagramActions:
         try:
             # دریافت ایموجی واکنش
             reaction = get_random_reaction()
+            self.logger.info(
+                f"تلاش برای ارسال واکنش {reaction} به استوری {story_id} از کاربر {username}")
 
-            # واکنش به استوری - مدیریت خطای JSONDecodeError
-            try:
-                self.client.story_send_reaction(story_id, reaction)
-                self.logger.info(
-                    f"✅ واکنش {reaction} به استوری {story_id} از {username} ارسال شد")
-            except json.JSONDecodeError as je:
-                self.logger.warning(
-                    f"خطای JSONDecodeError در ارسال واکنش: {je}")
-                # ارسال واکنش با روش جایگزین
+            # روش اول: تلاش برای استفاده از story_send_reaction اگر موجود باشد
+            reaction_sent = False
+
+            if hasattr(self.client, 'story_send_reaction'):
                 try:
-                    # روش جایگزین - می‌توان از سایر متدهای کتابخانه استفاده کرد
-                    # مثال: self.client.direct_send(reaction, [user_id], thread_ids=[story_id])
-                    # یا روش‌های دیگر مختص کتابخانه شما
-                    human_sleep(2, 5)
-                    return False
+                    self.logger.info("استفاده از روش story_send_reaction")
+                    self.client.story_send_reaction(story_id, reaction)
+                    reaction_sent = True
+                    self.logger.info(
+                        f"✅ واکنش {reaction} به استوری {story_id} از {username} ارسال شد (روش 1)")
                 except Exception as e:
-                    self.logger.error(f"خطا در روش جایگزین ارسال واکنش: {e}")
-                    return False
+                    self.logger.warning(f"خطا در روش story_send_reaction: {e}")
+                    # ادامه با روش‌های بعدی
+
+            # روش دوم: استفاده از story_seen
+            if not reaction_sent and hasattr(self.client, 'story_seen'):
+                try:
+                    self.logger.info("استفاده از روش story_seen")
+                    result = self.client.story_seen([story_id])
+                    self.logger.info(f"نتیجه story_seen: {result}")
+
+                    # بعد از دیدن استوری، ارسال واکنش از طریق direct
+                    if hasattr(self.client, 'direct_send'):
+                        self.client.direct_send(
+                            reaction, [user_id], thread_ids=[story_id])
+                        reaction_sent = True
+                        self.logger.info(
+                            f"✅ واکنش {reaction} به استوری {story_id} از {username} ارسال شد (روش 2)")
+                except Exception as e:
+                    self.logger.warning(
+                        f"خطا در روش story_seen + direct_send: {e}")
+
+            # روش سوم: استفاده از direct_answer
+            if not reaction_sent and hasattr(self.client, 'direct_answer'):
+                try:
+                    self.logger.info("استفاده از روش direct_answer")
+                    self.client.direct_answer(story_id, reaction)
+                    reaction_sent = True
+                    self.logger.info(
+                        f"✅ واکنش {reaction} به استوری {story_id} از {username} ارسال شد (روش 3)")
+                except Exception as e:
+                    self.logger.warning(f"خطا در روش direct_answer: {e}")
+
+            # روش چهارم: استفاده از direct_send به تنهایی
+            if not reaction_sent and hasattr(self.client, 'direct_send'):
+                try:
+                    self.logger.info("استفاده از روش direct_send")
+                    # ارسال پیام مستقیم به کاربر
+                    message = f"واکنش به استوری: {reaction}"
+                    self.client.direct_send(message, [user_id])
+                    reaction_sent = True
+                    self.logger.info(
+                        f"✅ واکنش {reaction} به کاربر {username} ارسال شد (روش 4)")
+                except Exception as e:
+                    self.logger.warning(f"خطا در روش direct_send: {e}")
+
+            # اگر هیچ روشی موفقیت‌آمیز نبود
+            if not reaction_sent:
+                self.logger.warning(
+                    f"❌ تمام روش‌های ارسال واکنش به استوری ناموفق بودند")
+                return False
 
             human_sleep(4, 10)  # تأخیر طبیعی‌تر
 
-            # ثبت تعامل
+            # ثبت تعامل فقط در صورت موفقیت ارسال واکنش
             interaction = UserInteraction(
                 user_id=user_id,
                 username=username,
@@ -274,7 +319,14 @@ class InstagramActions:
                 content=reaction,
                 media_id=story_id
             )
-            self._record_interaction(interaction, update_user_profile_func)
+            record_result = self._record_interaction(
+                interaction, update_user_profile_func)
+
+            if record_result:
+                self.logger.info(f"✅ تعامل واکنش به استوری در دیتابیس ثبت شد")
+            else:
+                self.logger.warning(
+                    f"❌ خطا در ثبت تعامل واکنش به استوری در دیتابیس")
 
             self.logger.info(
                 f"Reacted to story {story_id} from {username} with {reaction}")
