@@ -1,4 +1,5 @@
 import random
+import re  # این خط رو اضافه کن
 from typing import List, Optional
 from datetime import datetime
 from loguru import logger
@@ -9,6 +10,7 @@ from app.database.models import UserInteraction, InteractionType
 from app.bot.utils import human_sleep, should_perform_action, humanize_text, setup_logger
 from app.bot.utils import get_random_comment, get_random_dm, get_random_reaction
 from app.config import COMMENT_PROBABILITY, REACTION_PROBABILITY, DM_PROBABILITY
+from app.bot.content_analyzer import ContentAnalyzer
 
 
 class InstagramActions:
@@ -17,6 +19,8 @@ class InstagramActions:
         self.db = db
         self.session_id = session_id
         self.logger = setup_logger()
+        # اضافه کردن آنالایزر محتوا
+        self.content_analyzer = ContentAnalyzer()
 
     def _record_interaction(self, interaction: UserInteraction, update_user_profile_func):
         """ثبت تعامل کاربر در دیتابیس"""
@@ -123,8 +127,47 @@ class InstagramActions:
             return False
 
         try:
+            # دریافت اطلاعات پست
+            try:
+                media_info = self.client.media_info(media_id)
+
+                # استخراج کپشن
+                caption = ""
+                if hasattr(media_info, "caption_text") and media_info.caption_text:
+                    caption = media_info.caption_text
+                elif hasattr(media_info, "caption") and media_info.caption:
+                    caption = media_info.caption
+                elif isinstance(media_info, dict) and "caption" in media_info:
+                    caption = media_info["caption"]
+
+                # استخراج هشتگ‌ها
+                hashtags = []
+                if caption:
+                    hashtags = re.findall(r'#(\w+)', caption)
+
+                self.logger.debug(f"Caption retrieved: {caption[:100]}...")
+                if hashtags:
+                    self.logger.debug(f"Hashtags: {hashtags}")
+
+            except Exception as e:
+                self.logger.warning(f"خطا در دریافت اطلاعات پست: {e}")
+                caption = ""
+                hashtags = []
+
+            # تحلیل محتوا و تشخیص موضوع
+            detected_topic = self.content_analyzer.analyze(caption, hashtags)
+            self.logger.info(f"Detected topic from content: {detected_topic}")
+
+            # ترکیب موضوع هشتگ و موضوع تشخیص داده شده
+            if topic and detected_topic != "general":
+                final_topic = detected_topic  # اولویت با موضوع تشخیص داده شده
+            elif topic:
+                final_topic = topic
+            else:
+                final_topic = detected_topic
+
             # دریافت متن کامنت و انسانی‌سازی آن
-            comment_text = humanize_text(get_random_comment(topic))
+            comment_text = humanize_text(get_random_comment(final_topic))
 
             # افزودن کامنت
             self.client.media_comment(media_id, comment_text)
@@ -138,12 +181,17 @@ class InstagramActions:
                 timestamp=datetime.now(),
                 content=comment_text,
                 media_id=media_id,
-                metadata={"topic": topic, "is_persian": True}
+                metadata={
+                    "topic": final_topic,
+                    "is_persian": True,
+                    "detected_from_content": detected_topic != "general",
+                    "hashtags": hashtags
+                }
             )
             self._record_interaction(interaction, update_user_profile_func)
 
             self.logger.info(
-                f"Commented on media {media_id} from {username}: {comment_text}")
+                f"Commented on media {media_id} from {username} with topic {final_topic}: {comment_text}")
             return True
 
         except Exception as e:
