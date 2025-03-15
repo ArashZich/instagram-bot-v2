@@ -8,6 +8,7 @@ import sys
 
 from app.bot.instagram_bot import InstagramBot
 from app.config import BOT_SLEEP_TIME
+from app.database.fix_ttl import fix_ttl_indexes  # این خط رو اضافه کنید
 
 
 def main():
@@ -22,6 +23,13 @@ def main():
         if result.returncode != 0:
             logger.error("تست‌های شبکه شکست خوردند. برنامه اصلی اجرا نمی‌شود.")
             return
+
+        # اصلاح ایندکس‌های TTL قبل از شروع بات
+        logger.info("بررسی و اصلاح ایندکس‌های TTL...")
+        fix_ttl_result = fix_ttl_indexes()
+        if not fix_ttl_result:
+            logger.warning(
+                "اصلاح ایندکس‌های TTL با مشکل مواجه شد اما ادامه می‌دهیم...")
 
         # Setup the bot
         logger.info("Initializing Instagram bot...")

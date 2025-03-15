@@ -133,6 +133,7 @@ async def get_interactions(
         # دریافت نام کالکشن صحیح
         collection_name = get_collection_name("interactions")
         print(f"Querying collection: {collection_name}")
+        print(f"Query: {query}")  # اضافه کن برای دیباگ
 
         # بررسی وجود کالکشن
         collections = await db.list_collection_names()
@@ -141,8 +142,12 @@ async def get_interactions(
                 f"Collection {collection_name} not found! Available collections: {collections}")
             return []
 
-        # لاگ کوئری
-        print(f"Query: {query}")
+        # اضافه کن برای دیباگ
+        total_count = await db[collection_name].count_documents({})
+        print(f"Total documents in collection: {total_count}")
+
+        filtered_count = await db[collection_name].count_documents(query)
+        print(f"Filtered documents: {filtered_count}")
 
         # جستجو در دیتابیس
         cursor = db[collection_name].find(

@@ -78,6 +78,10 @@ def get_database():
                 {"test": True, "timestamp": datetime.now()}).inserted_id
             test_collection.delete_one({"_id": test_id})
             logger.info("✅ اتصال به MongoDB و تست نوشتن موفقیت‌آمیز بود")
+
+            # اینجا بررسی کن آیا TTL index وجود داره و حذفش کن
+            # ممکنه در کالکشن‌های دیگه در جای دیگه‌ای از کد تنظیم شده باشه
+
             return db
         logger.error("❌ اتصال به MongoDB ناموفق بود")
         return None
