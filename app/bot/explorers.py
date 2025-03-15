@@ -7,12 +7,28 @@ from loguru import logger
 from app.bot.utils import human_sleep, is_persian_content, setup_logger
 
 
+def custom_search_tags(client, tag):
+    """Custom implementation to search tags when the native method is not available"""
+    try:
+        # Try using the hashtag_info method
+        return client.hashtag_info(tag)
+    except Exception as e:
+        logger.warning(f"Error using hashtag_info: {e}")
+        return None
+
+
 class InstagramExplorers:
     def __init__(self, client, actions, db=None):
         self.client = client
         self.actions = actions
         self.db = db
         self.logger = setup_logger()
+
+        # Add search_tags if not present
+        if not hasattr(self.client, 'search_tags'):
+            self.logger.info("Adding custom search_tags method to client")
+            self.client.search_tags = lambda tag: custom_search_tags(
+                self.client, tag)
 
     def explore_hashtags(self, hashtags: List[str], count: int = 5, update_user_profile_func=None):
         """جستجوی پست‌ها با هشتگ‌های مشخص و تعامل با آن‌ها"""
@@ -21,43 +37,51 @@ class InstagramExplorers:
 
             try:
                 # استفاده از روش جایگزین برای جستجوی هشتگ
+                medias = []
+
+                # روش 0: تلاش با hashtag_medias_recent اگر وجود داشته باشد
                 try:
-                    # روش 1: استفاده از جستجوی عمومی به جای هشتگ مستقیم
-                    self.logger.info(
-                        f"تلاش برای یافتن پست‌های هشتگ #{hashtag} با روش جستجو")
+                    if hasattr(self.client, 'hashtag_medias_recent'):
+                        self.logger.info(
+                            f"تلاش برای دریافت پست‌های اخیر هشتگ #{hashtag}")
+                        medias = self.client.hashtag_medias_recent(
+                            hashtag, count)
+                        if medias:
+                            self.logger.info(
+                                f"دریافت {len(medias)} پست با hashtag_medias_recent")
+                except Exception as e:
+                    self.logger.warning(f"خطا در دریافت پست‌های اخیر: {e}")
 
-                    search_results = self.client.search_tags(hashtag)
-                    medias = []
+                # اگر روش قبلی موفق نبود، تلاش با روش دیگر
+                if not medias:
+                    try:
+                        # روش 1: استفاده از جستجوی عمومی به جای هشتگ مستقیم
+                        self.logger.info(
+                            f"تلاش برای یافتن پست‌های هشتگ #{hashtag} با روش جستجو")
 
-                    if search_results:
-                        # اگر هشتگ پیدا شد، سعی می‌کنیم از طریق پروفایل آن به پست‌ها دسترسی پیدا کنیم
-                        tag_id = search_results[0].id if len(
-                            search_results) > 0 else None
+                        search_results = self.client.search_tags(hashtag)
+                        if search_results:
+                            # اگر هشتگ پیدا شد، سعی می‌کنیم از طریق پروفایل آن به پست‌ها دسترسی پیدا کنیم
+                            tag_id = search_results.id if hasattr(
+                                search_results, 'id') else None
 
-                        if tag_id:
-                            # تلاش برای دریافت پست‌های مرتبط با هشتگ
-                            try:
-                                tag_info = self.client.hashtag_info(hashtag)
-                                if hasattr(tag_info, 'media_count') and tag_info.media_count > 0:
-                                    # می‌توانیم از top posts استفاده کنیم
-                                    medias = self.client.hashtag_medias_top(
-                                        hashtag, count)
-                                    self.logger.info(
-                                        f"پست‌های برتر هشتگ #{hashtag} دریافت شدند")
-                            except Exception as e:
-                                self.logger.warning(
-                                    f"خطا در دریافت اطلاعات هشتگ: {e}")
-                                medias = []
-
-                    # اگر هیچ پستی پیدا نشد
-                    if not medias:
+                            if tag_id:
+                                # تلاش برای دریافت پست‌های مرتبط با هشتگ
+                                try:
+                                    tag_info = self.client.hashtag_info(
+                                        hashtag)
+                                    if hasattr(tag_info, 'media_count') and tag_info.media_count > 0:
+                                        # می‌توانیم از top posts استفاده کنیم
+                                        medias = self.client.hashtag_medias_top(
+                                            hashtag, count)
+                                        self.logger.info(
+                                            f"پست‌های برتر هشتگ #{hashtag} دریافت شدند")
+                                except Exception as e:
+                                    self.logger.warning(
+                                        f"خطا در دریافت اطلاعات هشتگ: {e}")
+                    except Exception as tag_error:
                         self.logger.warning(
-                            f"پستی برای هشتگ #{hashtag} یافت نشد")
-                        # بجای continue از روش‌های دیگر استفاده میکنیم
-                except Exception as tag_error:
-                    self.logger.warning(
-                        f"خطا در جستجوی هشتگ با روش اول: {tag_error}")
-                    medias = []
+                            f"خطا در جستجوی هشتگ با روش اول: {tag_error}")
 
                 # روش 2: استفاده از جستجوی عمومی
                 if not medias:
@@ -71,7 +95,6 @@ class InstagramExplorers:
                     except Exception as search_error:
                         self.logger.warning(
                             f"خطا در جستجوی عمومی: {search_error}")
-                        medias = []
 
                 # روش 3: استفاده از پست‌های فالوئینگ‌ها یا explore
                 if not medias:
@@ -86,7 +109,6 @@ class InstagramExplorers:
                     except Exception as alt_error:
                         self.logger.warning(
                             f"خطا در یافتن محتوای جایگزین: {alt_error}")
-                        medias = []
 
                 # تعامل با پست‌های یافت شده
                 if len(medias) > 0:

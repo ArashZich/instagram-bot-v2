@@ -69,6 +69,13 @@ class InstagramActions:
 
             # ثبت در دیتابیس
             try:
+                # برای اطمینان از وجود کالکشن
+                collections = self.db.list_collection_names()
+                if collection_name not in collections:
+                    self.logger.warning(
+                        f"کالکشن {collection_name} وجود ندارد، در حال ایجاد...")
+                    self.db.create_collection(collection_name)
+
                 result = self.db[collection_name].insert_one(interaction_dict)
                 self.logger.info(f"تعامل با ID: {result.inserted_id} ثبت شد.")
             except Exception as insert_error:
@@ -225,8 +232,14 @@ class InstagramActions:
             # افزودن کامنت
             self.logger.info(
                 f"ارسال کامنت برای پست {media_id} از کاربر {username}: {comment_text}")
-            self.client.media_comment(media_id, comment_text)
-            human_sleep(5, 15)  # تأخیر طبیعی‌تر و طولانی‌تر
+            try:
+                self.client.media_comment(media_id, comment_text)
+                human_sleep(5, 15)  # تأخیر طبیعی‌تر و طولانی‌تر
+                comment_status = "success"
+            except Exception as comment_error:
+                self.logger.warning(f"خطا در ارسال کامنت: {comment_error}")
+                comment_status = "failed"
+                # ادامه می‌دهیم تا تعامل را ثبت کنیم حتی با وجود خطا
 
             # ثبت تعامل
             self.logger.info(
@@ -238,7 +251,7 @@ class InstagramActions:
                 timestamp=datetime.now(),
                 content=comment_text,
                 media_id=media_id,
-                status="success",
+                status=comment_status,
                 metadata={
                     "topic": final_topic,
                     "is_persian": True,
@@ -253,7 +266,7 @@ class InstagramActions:
 
             self.logger.info(
                 f"Commented on media {media_id} from {username} with topic {final_topic}: {comment_text}")
-            return True
+            return comment_status == "success"
 
         except Exception as e:
             if "challenge_required" in str(e).lower():
@@ -263,6 +276,29 @@ class InstagramActions:
 
             self.logger.error(f"Failed to comment on media {media_id}: {e}")
             self.logger.error(f"Traceback: {traceback.format_exc()}")
+
+            # ثبت تعامل با وضعیت خطا
+            try:
+                error_interaction = UserInteraction(
+                    user_id=user_id,
+                    username=username,
+                    interaction_type=InteractionType.COMMENT,
+                    timestamp=datetime.now(),
+                    content="",
+                    media_id=media_id,
+                    status="error",
+                    error=str(e),
+                    metadata={
+                        "topic": topic or "general",
+                        "error_details": traceback.format_exc()
+                    }
+                )
+                self._record_interaction(
+                    error_interaction, update_user_profile_func)
+                self.logger.info(f"تعامل خطا ثبت شد برای کاربر {username}")
+            except Exception as record_error:
+                self.logger.error(f"خطا در ثبت تعامل خطا: {record_error}")
+
             return False
 
     def react_to_story(self, story_id: str, username: str, user_id: str, update_user_profile_func):

@@ -107,29 +107,72 @@ class SessionManager:
                     self.logger.error("نمی‌توان به دیتابیس متصل شد!")
                     return False
 
-            result = self.db[get_collection_name(
-                "sessions")].insert_one(session.to_dict())
+            # اطمینان از وجود کالکشن
+            collection_name = get_collection_name("sessions")
+            collections = self.db.list_collection_names()
+            if collection_name not in collections:
+                self.logger.info(f"ایجاد کالکشن {collection_name}")
+                self.db.create_collection(collection_name)
+
+            # تبدیل به دیکشنری برای ذخیره
+            session_dict = session.to_dict()
+
+            # حذف فیلدهای مشکل‌دار
+            if "session_data" in session_dict and isinstance(session_dict["session_data"], dict):
+                # اطمینان از قابل سریالایز بودن داده‌ها
+                for key, value in list(session_dict["session_data"].items()):
+                    if hasattr(value, '__dict__'):
+                        session_dict["session_data"][key] = str(value)
+
+            result = self.db[collection_name].insert_one(session_dict)
             self.logger.info(
-                f"Recorded session start with ID: {self.session_id}, MongoDB ID: {result.inserted_id}")
+                f"جلسه با شناسه {self.session_id} و ID مونگو {result.inserted_id} ثبت شد")
             return True
         except Exception as e:
             self.logger.error(f"خطا در ثبت شروع جلسه: {e}")
             import traceback
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            self.logger.error(f"ردیابی خطا: {traceback.format_exc()}")
             return False
 
     def record_session_end(self):
         """ثبت پایان سشن در دیتابیس"""
-        self.db[get_collection_name("sessions")].update_one(
-            {"session_id": self.session_id},
-            {
-                "$set": {
-                    "ended_at": datetime.now(),
-                    "is_active": False
+        try:
+            collection_name = get_collection_name("sessions")
+            result = self.db[collection_name].update_one(
+                {"session_id": self.session_id},
+                {
+                    "$set": {
+                        "ended_at": datetime.now(),
+                        "is_active": False
+                    }
                 }
-            }
-        )
-        self.logger.info(f"Recorded session end with ID: {self.session_id}")
+            )
+
+            if result.matched_count > 0:
+                self.logger.info(
+                    f"پایان جلسه با شناسه {self.session_id} ثبت شد")
+            else:
+                self.logger.warning(
+                    f"جلسه با شناسه {self.session_id} برای پایان دادن پیدا نشد")
+
+                # در صورت عدم یافتن، یک رکورد جدید ایجاد کن
+                session = BotSession(
+                    session_id=self.session_id,
+                    # فرض می‌کنیم 5 دقیقه قبل شروع شده
+                    started_at=datetime.now() - timedelta(minutes=5),
+                    ended_at=datetime.now(),
+                    user_agent="instagrapi-client",
+                    session_data={"username": self.username},
+                    is_active=False
+                )
+                self.db[collection_name].insert_one(session.to_dict())
+                self.logger.info(
+                    f"یک رکورد جلسه جدید برای {self.session_id} با وضعیت پایان یافته ایجاد شد")
+
+        except Exception as e:
+            self.logger.error(f"خطا در ثبت پایان جلسه: {e}")
+            import traceback
+            self.logger.error(f"ردیابی خطا: {traceback.format_exc()}")
 
     def handle_challenge(self, e):
         """مدیریت چالش‌های اینستاگرام"""
