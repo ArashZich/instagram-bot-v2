@@ -274,17 +274,26 @@ class InstagramExplorers:
                         elif hasattr(media, 'caption_text') and media.caption_text:
                             caption = media.caption_text
 
-                        # این بخش رو تغییر میدیم برای رفع خطای slice
+                        # این بخش تغییر کرده است - رفع خطای slice
                         caption_text = ""
                         if caption:
+                            # تبدیل caption به رشته قبل از استفاده از slice
                             if isinstance(caption, str):
                                 caption_text = caption[:50]
+                            elif isinstance(caption, dict):
+                                # اگر caption یک دیکشنری است
+                                caption_text = str(caption)[:50]
                             else:
                                 caption_text = str(caption)[:50]
+
                         self.logger.debug(f"کپشن پست: {caption_text}")
 
                         if caption:
-                            has_persian = is_persian_content(caption)
+                            if isinstance(caption, str):
+                                has_persian = is_persian_content(caption)
+                            else:
+                                # اگر caption یک رشته نیست، به رشته تبدیل می‌کنیم
+                                has_persian = is_persian_content(str(caption))
 
                         # اولویت دادن به محتوای فارسی
                         if has_persian:

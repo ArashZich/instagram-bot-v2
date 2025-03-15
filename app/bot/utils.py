@@ -200,11 +200,33 @@ def humanize_text(text: str, typo_probability: float = 0.05) -> str:
     return ' '.join(words)
 
 
-def is_persian_content(text: str) -> bool:
+def is_persian_content(text):
     """تشخیص محتوای فارسی"""
     if not text:
         return False
 
+    # بررسی نوع ورودی - اگر دیکشنری یا غیر رشته است، به رشته تبدیل کنیم
+    if not isinstance(text, str):
+        try:
+            # اگر دیکشنری است، سعی می‌کنیم مقدار متنی آن را استخراج کنیم
+            if isinstance(text, dict):
+                # اگر کلیدهای مرتبط با متن را دارد استفاده کنیم
+                if 'text' in text:
+                    text = text['text']
+                elif 'caption' in text:
+                    text = text['caption']
+                else:
+                    # تبدیل کل دیکشنری به رشته
+                    text = str(text)
+            else:
+                # تبدیل به رشته
+                text = str(text)
+        except Exception as e:
+            # اگر تبدیل با خطا مواجه شد، لاگ کنیم و False برگردانیم
+            logger.error(f"خطا در تبدیل محتوا به رشته: {e}")
+            return False
+
+    # ادامه روند قبلی
     persian_chars = set('آابپتثجچحخدذرزژسشصضطظعغفقکگلمنوهی')
     text_chars = set(text.replace(" ", ""))
 
